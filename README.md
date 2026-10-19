@@ -50,6 +50,9 @@ official OpenAI SDKs, `curl` — and talk to DeepSeek without an official API ke
 - **Multi-turn context** — automatic prefix caching reuses a DeepSeek session; an explicit `conversation_id` passthrough is also supported.
 - **Future-proof model names** — unknown `deepseek-*` ids are mapped heuristically (reasoner/think/search keywords), so clients that hardcode newer names keep working.
 - **Self-cleaning** — idle sessions are deleted upstream so your web chat list stays tidy.
+- **Anti-fraud rate limiting** — per-account QPM token bucket + in-flight concurrency semaphore prevent burst flooding.
+- **429 exponential-backoff retry** — on rate-limit, waits with exponential backoff and rotates to a different account.
+- **Behavioral randomization** — random UA/version/locale per client, request jitter, simulated POW solving delay, and optional device ID rotation to reduce fingerprint similarity.
 - **Docker / Docker Compose** ready.
 
 ## Supported models
@@ -142,6 +145,16 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 | `DEFAULT_MODEL` | `deepseek-chat` | Model used when a request omits one |
 | `CONVERSATION_TTL` | `30m` | Idle time before a session is deleted upstream |
 | `MAX_CONVERSATIONS` | `1024` | Max sessions kept in memory (LRU eviction) |
+| `ACCOUNT_QPM` | `30` | Max requests per account per sliding minute |
+| `MAX_CONCURRENT_PER_ACCOUNT` | `5` | Max in-flight completions per account simultaneously |
+| `RETRY_MAX_ATTEMPTS` | `3` | Max 429 retry attempts before giving up |
+| `RETRY_BASE_DELAY` | `2s` | Base delay for exponential backoff (actual waits: 2s, 4s, 8s…) |
+| `REQUEST_JITTER_MIN` | `200ms` | Min random delay (ms) before each completion request |
+| `REQUEST_JITTER_MAX` | `800ms` | Max random delay (ms) before each completion request |
+| `POW_JITTER_MIN` | `30ms` | Min artificial delay (ms) when solving POW challenge |
+| `POW_JITTER_MAX` | `150ms` | Max artificial delay (ms) when solving POW challenge |
+| `SESSION_CREATE_JITTER` | `200ms` | Random delay before creating a new DeepSeek session |
+| `DEVICE_ID_ROTATE_HOURS` | `0` | Rotate device ID every N hours (0 = disabled) |
 
 ## Multi-turn conversations
 

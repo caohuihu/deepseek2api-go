@@ -20,7 +20,7 @@ func main() {
 	}
 
 	convs := handlers.NewConvStore(cfg.ConversationTTL, cfg.MaxConvs)
-	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts), convs)
+	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts, cfg.PowJitterMin, cfg.PowJitterMax), convs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +46,12 @@ func main() {
 		log.Printf("  accounts           : %d", len(cfg.Accounts))
 		log.Printf("  default model      : %s", cfg.DefaultModel)
 		log.Printf("  conv ttl           : %s", cfg.ConversationTTL)
-		log.Printf("  account qpm        : %d", cfg.AccountQPM)
-		log.Printf("  max concurrent/account: %d", cfg.MaxConcurrentPerAccount)
-		log.Printf("  retry max attempts : %d (base %s)", cfg.RetryMaxAttempts, cfg.RetryBaseDelay)
+		log.Printf("  account qpm              : %d", cfg.AccountQPM)
+		log.Printf("  max concurrent/account   : %d", cfg.MaxConcurrentPerAccount)
+		log.Printf("  retry max attempts       : %d (base %s)", cfg.RetryMaxAttempts, cfg.RetryBaseDelay)
+		log.Printf("  request jitter           : %s ~ %s", cfg.RequestJitterMin, cfg.RequestJitterMax)
+		log.Printf("  pow jitter               : %s ~ %s", cfg.PowJitterMin, cfg.PowJitterMax)
+		log.Printf("  session create jitter    : %s", cfg.SessionCreateJitter)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

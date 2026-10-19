@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	rand2 "math/rand"
 	"runtime"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // DeepSeekHashV1 is the proof-of-work hash used by chat.deepseek.com.
@@ -122,7 +124,14 @@ type PowChallenge struct {
 // Solve finds a nonce whose DeepSeekHashV1 hash equals the challenge.
 // Any valid nonce is accepted by the server, so workers scan interleaved
 // ranges and the first hit wins. Expected work is ~difficulty hashes.
-func (c *PowChallenge) Solve() (uint64, error) {
+//
+// An artificial delay (minDelay~maxDelay) is applied before solving to
+// mimic the browser's visible computation time (~30-150ms), reducing the
+// "machine-speed" signature of the requests.
+func (c *PowChallenge) Solve(minDelay, maxDelay time.Duration) (uint64, error) {
+	if maxDelay > minDelay {
+		time.Sleep(time.Duration(rand2.Int63n(int64(maxDelay-minDelay))) + minDelay)
+	}
 	if c.Algorithm != "" && c.Algorithm != "DeepSeekHashV1" {
 		return 0, fmt.Errorf("unsupported pow algorithm: %s", c.Algorithm)
 	}

@@ -9,18 +9,24 @@ import (
 )
 
 type Config struct {
-	Port                       string
-	ProxyAPIKey                string
-	BaseURL                    string
-	Accounts                   []string // DeepSeek web tokens, one per account
-	AccountsFile               string
-	DefaultModel               string
-	ConversationTTL            time.Duration
-	MaxConvs                   int
-	AccountQPM                 int // per-account requests/min (default 30)
-	MaxConcurrentPerAccount    int // in-flight concurrency per account (default 5)
-	RetryMaxAttempts           int // max 429 retry attempts (default 3)
-	RetryBaseDelay             time.Duration
+	Port                      string
+	ProxyAPIKey               string
+	BaseURL                   string
+	Accounts                  []string // DeepSeek web tokens, one per account
+	AccountsFile              string
+	DefaultModel              string
+	ConversationTTL           time.Duration
+	MaxConvs                  int
+	AccountQPM                int // per-account requests/min (default 30)
+	MaxConcurrentPerAccount   int // in-flight concurrency per account (default 5)
+	RetryMaxAttempts          int // max 429 retry attempts (default 3)
+	RetryBaseDelay            time.Duration
+	RequestJitterMin          time.Duration // min random delay before each completion (default 200ms)
+	RequestJitterMax          time.Duration // max random delay before each completion (default 800ms)
+	PowJitterMin              time.Duration // min artificial delay when solving POW (default 30ms)
+	PowJitterMax              time.Duration // max artificial delay when solving POW (default 150ms)
+	SessionCreateJitter       time.Duration // random delay before creating a new session (default 200ms)
+	DeviceIDRotateHours       int           // rotate deviceID every N hours (0 = disabled, default 0)
 }
 
 // Load reads configuration from the environment. Accounts come from
@@ -32,17 +38,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid RETRY_BASE_DELAY: %w", err)
 	}
 	cfg := &Config{
-		Port:                env("PORT", "8080"),
-		ProxyAPIKey:         env("PROXY_API_KEY", ""),
-		BaseURL:             strings.TrimRight(env("DEEPSEEK_BASE_URL", "https://chat.deepseek.com"), "/"),
-		AccountsFile:        env("DEEPSEEK_ACCOUNTS_FILE", "accounts.txt"),
-		DefaultModel:        env("DEFAULT_MODEL", "deepseek-chat"),
-		ConversationTTL:     30 * time.Minute,
-		MaxConvs:            1024,
-		AccountQPM:          parseIntEnv("ACCOUNT_QPM", 30),
-		MaxConcurrentPerAccount: parseIntEnv("MAX_CONCURRENT_PER_ACCOUNT", 5),
-		RetryMaxAttempts:    parseIntEnv("RETRY_MAX_ATTEMPTS", 3),
-		RetryBaseDelay:      d,
+		Port:                      env("PORT", "8080"),
+		ProxyAPIKey:               env("PROXY_API_KEY", ""),
+		BaseURL:                   strings.TrimRight(env("DEEPSEEK_BASE_URL", "https://chat.deepseek.com"), "/"),
+		AccountsFile:              env("DEEPSEEK_ACCOUNTS_FILE", "accounts.txt"),
+		DefaultModel:              env("DEFAULT_MODEL", "deepseek-chat"),
+		ConversationTTL:           30 * time.Minute,
+		MaxConvs:                  1024,
+		AccountQPM:                parseIntEnv("ACCOUNT_QPM", 30),
+		MaxConcurrentPerAccount:   parseIntEnv("MAX_CONCURRENT_PER_ACCOUNT", 5),
+		RetryMaxAttempts:          parseIntEnv("RETRY_MAX_ATTEMPTS", 3),
+		RetryBaseDelay:            d,
+		RequestJitterMin:          parseDurationEnv("REQUEST_JITTER_MIN", 200*time.Millisecond),
+		RequestJitterMax:          parseDurationEnv("REQUEST_JITTER_MAX", 800*time.Millisecond),
+		PowJitterMin:              parseDurationEnv("POW_JITTER_MIN", 30*time.Millisecond),
+		PowJitterMax:              parseDurationEnv("POW_JITTER_MAX", 150*time.Millisecond),
+		SessionCreateJitter:       parseDurationEnv("SESSION_CREATE_JITTER", 200*time.Millisecond),
+		DeviceIDRotateHours:       parseIntEnv("DEVICE_ID_ROTATE_HOURS", 0),
 	}
 	if cfg.ProxyAPIKey == "" {
 		return nil, fmt.Errorf("PROXY_API_KEY is required")
@@ -105,6 +117,15 @@ func parseIntEnv(key string, def int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
+		}
+	}
+	return def
+}
+
+func parseDurationEnv(key string, def time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
 		}
 	}
 	return def

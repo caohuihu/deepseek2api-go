@@ -4,9 +4,68 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - PORT=8080
-      - PROXY_API_KEY=${PROXY_API_KEY:?请在环境变量中提供 PROXY_API_KEY}
+      # ─── 必需 ──────────────────────────────────────────────────────
+      # 代理 API 密钥：客户端调用时使用的认证 key
+      - PROXY_API_KEY=${PROXY_API_KEY:?请在环境变量或 .env 文件中提供 PROXY_API_KEY}
+
+      # ─── DeepSeek 账号 ─────────────────────────────────────────────
+      # 单个账号 token（也可通过 accounts.txt 文件配置多个）
+      # 获取方式：浏览器登录 chat.deepseek.com → F12 Console →
+      #           JSON.parse(localStorage.userToken).value
       - DEEPSEEK_TOKEN=${DEEPSEEK_TOKEN:-}
+
+      # 多账号文件路径（每行一个 token，支持 # 注释和空行）
+      - DEEPSEEK_ACCOUNTS_FILE=${DEEPSEEK_ACCOUNTS_FILE:-accounts.txt}
+
+      # ─── 服务基础配置 ──────────────────────────────────────────────
+      # 监听端口
+      - PORT=${PORT:-8080}
+      # 上游 DeepSeek 网页端地址（一般无需修改）
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://chat.deepseek.com}
+      # 默认模型（请求未指定 model 时使用）
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek-chat}
+
+      # ─── 会话管理 ──────────────────────────────────────────────────
+      # 空闲会话在上游删除前的等待时间
+      - CONVERSATION_TTL=${CONVERSATION_TTL:-30m}
+      # 内存中最多保留的会话数（LRU 淘汰）
+      - MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-1024}
+
+      # ─── 风控限流 ──────────────────────────────────────────────────
+      # 每账号每分钟最大请求数（令牌桶），建议 20-50
+      # 值越大风险越高，建议从 30 开始逐步调整
+      - ACCOUNT_QPM=${ACCOUNT_QPM:-30}
+      # 每账号同时进行的最大并发请求数
+      # 建议不超过 5，过多并发易触发风控
+      - MAX_CONCURRENT_PER_ACCOUNT=${MAX_CONCURRENT_PER_ACCOUNT:-5}
+
+      # ─── 429 重试策略 ──────────────────────────────────────────────
+      # 遇到 429 时最大重试次数（每次重试自动切换账号）
+      - RETRY_MAX_ATTEMPTS=${RETRY_MAX_ATTEMPTS:-3}
+      # 指数退避基础延迟：第 1 次等 2s，第 2 次等 4s，第 3 次等 8s…
+      # 最大不超过 5 分钟
+      - RETRY_BASE_DELAY=${RETRY_BASE_DELAY:-2s}
+
+      # ─── 行为随机化（降低指纹相似度） ──────────────────────────────
+      # 每次发送 Completion 请求前的随机等待时间范围
+      # 模拟人类思考间隔，建议 200ms~800ms
+      - REQUEST_JITTER_MIN=${REQUEST_JITTER_MIN:-200ms}
+      - REQUEST_JITTER_MAX=${REQUEST_JITTER_MAX:-800ms}
+
+      # POW 求解器的模拟计算延迟范围
+      # 浏览器解题通常需要 30-150ms，Go 实现毫秒级完成，
+      # 此参数让响应时间更贴近真实浏览器行为
+      - POW_JITTER_MIN=${POW_JITTER_MIN:-30ms}
+      - POW_JITTER_MAX=${POW_JITTER_MAX:-150ms}
+
+      # 新建会话前的随机延迟
+      - SESSION_CREATE_JITTER=${SESSION_CREATE_JITTER:-200ms}
+
+      # Device ID 轮换间隔（小时）
+      # 0 = 永不轮换（默认），建议生产环境设为 24 或 72
+      # 轮换后同一账号的新请求会使用新的设备指纹
+      - DEVICE_ID_ROTATE_HOURS=${DEVICE_ID_ROTATE_HOURS:-0}
     volumes:
+      # 多账号 token 文件（每行一个，支持 # 注释）
       - ./accounts.txt:/app/accounts.txt:ro
     restart: unless-stopped

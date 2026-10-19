@@ -34,7 +34,7 @@ func TestSolvePow(t *testing.T) {
 		Difficulty: 144000,
 	}
 	start := time.Now()
-	nonce, err := c.Solve()
+	nonce, err := c.Solve(0, 0)
 	if err != nil {
 		t.Fatalf("solve: %v", err)
 	}

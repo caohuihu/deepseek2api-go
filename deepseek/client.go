@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	rand2 "math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -24,26 +25,30 @@ const defaultBaseURL = "https://chat.deepseek.com"
 // The only credential is the web client's bearer token (localStorage
 // userToken); no cookies are required.
 type Client struct {
-	BaseURL   string
-	Token     string
-	DeviceID  string
-	Version   string
-	Locale    string
-	TZOffset  int // seconds east of UTC, as the web client sends it
-	UserAgent string
-	HTTP      *http.Client
+	BaseURL      string
+	Token        string
+	DeviceID     string
+	Version      string
+	Locale       string
+	TZOffset     int // seconds east of UTC, as the web client sends it
+	UserAgent    string
+	powJitterMin time.Duration
+	powJitterMax time.Duration
+	HTTP         *http.Client
 }
 
-func NewClient(token string) *Client {
+func NewClient(token string, powJitterMin, powJitterMax time.Duration) *Client {
 	_, offset := time.Now().Zone()
 	return &Client{
-		BaseURL:   defaultBaseURL,
-		Token:     token,
-		DeviceID:  newUUID(),
-		Version:   "2.5.0",
-		Locale:    "zh_CN",
-		TZOffset:  offset,
-		UserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		BaseURL:      defaultBaseURL,
+		Token:        token,
+		DeviceID:     newUUID(),
+		Version:      pickRandom(clientVersions),
+		Locale:       pickRandom(clientLocales),
+		TZOffset:     offset,
+		UserAgent:    pickRandom(userAgents),
+		powJitterMin: powJitterMin,
+		powJitterMax: powJitterMax,
 		HTTP: &http.Client{
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
@@ -201,7 +206,7 @@ func (c *Client) UploadFile(ctx context.Context, filename, contentType string, d
 	if err != nil {
 		return nil, fmt.Errorf("fetch pow challenge: %w", err)
 	}
-	answer, err := challenge.Solve()
+	answer, err := challenge.Solve(0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("solve pow: %w", err)
 	}
@@ -364,12 +369,16 @@ type completionPayload struct {
 // Completion runs the full three-step flow: fetch challenge, solve it, then
 // stream /chat/completion, feeding frames to cb. It returns when the stream
 // closes (normal end), the context is canceled, or an error occurs.
-func (c *Client) Completion(ctx context.Context, in CompletionInput, cb *StreamCallbacks) error {
+func (c *Client) Completion(ctx context.Context, in CompletionInput, cb *StreamCallbacks, jitterMin, jitterMax time.Duration) error {
+	// Simulate human-like thinking pause before sending the request.
+	if jitterMax > jitterMin {
+		time.Sleep(time.Duration(rand2.Int63n(int64(jitterMax-jitterMin))) + jitterMin)
+	}
 	challenge, err := c.CreatePowChallenge(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch pow challenge: %w", err)
 	}
-	answer, err := challenge.Solve()
+	answer, err := challenge.Solve(c.powJitterMin, c.powJitterMax)
 	if err != nil {
 		return fmt.Errorf("solve pow: %w", err)
 	}
@@ -463,4 +472,31 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// clientVersions are sampled from real DeepSeek web client releases.
+var clientVersions = []string{"2.5.0", "2.4.5", "2.4.0", "2.3.5", "2.3.0"}
+
+// clientLocales are sampled from common user locale settings.
+var clientLocales = []string{"zh_CN", "en_US", "zh_TW", "ja_JP", "ko_KR"}
+
+// userAgents cover the most common browser/platform combinations observed
+// in real DeepSeek web traffic. Randomising per client reduces fingerprint
+// similarity across accounts.
+var userAgents = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+}
+
+func pickRandom[T comparable](slice []T) T {
+	if len(slice) == 0 {
+		var zero T
+		return zero
+	}
+	return slice[rand2.Intn(len(slice))]
 }

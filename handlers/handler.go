@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	rand2 "math/rand"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -74,10 +75,10 @@ type AccountPool struct {
 	next    atomic.Uint64
 }
 
-func NewPool(tokens []string) *AccountPool {
+func NewPool(tokens []string, powJitterMin, powJitterMax time.Duration) *AccountPool {
 	p := &AccountPool{}
 	for _, t := range tokens {
-		p.clients = append(p.clients, deepseek.NewClient(t))
+		p.clients = append(p.clients, deepseek.NewClient(t, powJitterMin, powJitterMax))
 	}
 	return p
 }
@@ -490,13 +491,18 @@ func (h *Handler) doCompletionWithRetry(ctx context.Context, client *deepseek.Cl
 	if input.SessionID == "" {
 		newCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
+		// Add random delay before creating a new session to mimic human browsing patterns.
+		jitter := time.Duration(rand2.Int63n(int64(h.cfg.SessionCreateJitter)))
+		if jitter > 0 {
+			time.Sleep(jitter)
+		}
 		sid, err := client.CreateSession(newCtx)
 		if err != nil {
 			return err
 		}
 		input.SessionID = sid
 	}
-	return client.Completion(ctx, input, cb)
+	return client.Completion(ctx, input, cb, h.cfg.RequestJitterMin, h.cfg.RequestJitterMax)
 }
 
 func randHex(n int) string {
