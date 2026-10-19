@@ -75,10 +75,10 @@ type AccountPool struct {
 	next    atomic.Uint64
 }
 
-func NewPool(tokens []string, powJitterMin, powJitterMax time.Duration) *AccountPool {
+func NewPool(tokens []string, powJitterMin, powJitterMax, rotateInterval time.Duration) *AccountPool {
 	p := &AccountPool{}
 	for _, t := range tokens {
-		p.clients = append(p.clients, deepseek.NewClient(t, powJitterMin, powJitterMax))
+		p.clients = append(p.clients, deepseek.NewClient(t, powJitterMin, powJitterMax, rotateInterval))
 	}
 	return p
 }
@@ -96,11 +96,30 @@ type Handler struct {
 }
 
 func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
-	return &Handler{
+	h := &Handler{
 		cfg:     cfg,
 		pool:    pool,
 		convs:   convs,
 		limiter: NewAccountLimiter(cfg.AccountQPM),
+	}
+	// Start background goroutine for periodic DeviceID rotation.
+	if cfg.DeviceIDRotateHours > 0 {
+		go h.startDeviceIDRotation()
+	}
+	return h
+}
+
+// startDeviceIDRotation periodically rotates DeviceIDs across all accounts
+// when DEVICE_ID_ROTATE_HOURS is configured. This reduces long-term
+// fingerprint similarity for each account.
+func (h *Handler) startDeviceIDRotation() {
+	interval := time.Duration(h.cfg.DeviceIDRotateHours) * time.Hour
+	log.Printf("device ID rotation enabled: every %s", interval)
+	for range time.Tick(interval) {
+		for _, c := range h.pool.clients {
+			c.RotateDeviceID()
+		}
+		log.Printf("device IDs rotated (%d accounts)", len(h.pool.clients))
 	}
 }
 

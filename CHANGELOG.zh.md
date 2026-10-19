@@ -25,6 +25,12 @@
   - `CreateSession` 调用前增加 `SESSION_CREATE_JITTER` 随机等待（默认 200ms）。
   - 防止批量创建会话时呈现机器批量操作特征。
 
+- **运行时 DeviceID 定期轮换**（`deepseek/client.go` + `handlers/handler.go`）
+  - 新增 `DEVICE_ID_ROTATE_HOURS` 环境变量（默认 `0`，关闭）。
+  - 启用后，后台 goroutine 每 N 小时遍历所有账号的 Client，生成新 UUID 替换 DeviceID。
+  - 有效降低单一设备指纹在长时间运行场景下的可识别度。
+  - 启动日志会显示 `device ID rotation enabled: every Xh` 或 `device ID rotation: disabled`。
+
 ### 新增环境变量配置（续）
 
 | 变量名 | 默认值 | 说明 |

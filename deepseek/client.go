@@ -34,21 +34,29 @@ type Client struct {
 	UserAgent    string
 	powJitterMin time.Duration
 	powJitterMax time.Duration
-	HTTP         *http.Client
+	// deviceIDRotateInterval is the period after which DeviceID is
+	// regenerated. Zero means rotation is disabled.
+	deviceIDRotateInterval time.Duration
+	// deviceIDLastRotated marks the time the current DeviceID was created.
+	deviceIDLastRotated time.Time
+	HTTP                 *http.Client
 }
 
-func NewClient(token string, powJitterMin, powJitterMax time.Duration) *Client {
+func NewClient(token string, powJitterMin, powJitterMax time.Duration, rotateInterval time.Duration) *Client {
 	_, offset := time.Now().Zone()
+	now := time.Now()
 	return &Client{
-		BaseURL:      defaultBaseURL,
-		Token:        token,
-		DeviceID:     newUUID(),
-		Version:      pickRandom(clientVersions),
-		Locale:       pickRandom(clientLocales),
-		TZOffset:     offset,
-		UserAgent:    pickRandom(userAgents),
-		powJitterMin: powJitterMin,
-		powJitterMax: powJitterMax,
+		BaseURL:                  defaultBaseURL,
+		Token:                    token,
+		DeviceID:                 newUUID(),
+		Version:                  pickRandom(clientVersions),
+		Locale:                   pickRandom(clientLocales),
+		TZOffset:                 offset,
+		UserAgent:                pickRandom(userAgents),
+		powJitterMin:             powJitterMin,
+		powJitterMax:             powJitterMax,
+		deviceIDRotateInterval:   rotateInterval,
+		deviceIDLastRotated:      now,
 		HTTP: &http.Client{
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
@@ -499,4 +507,22 @@ func pickRandom[T comparable](slice []T) T {
 		return zero
 	}
 	return slice[rand2.Intn(len(slice))]
+}
+
+// RotateDeviceID replaces the client's DeviceID with a new UUID.
+// Call this when deviceIDRotateInterval has elapsed to reduce
+// fingerprint longevity.
+func (c *Client) RotateDeviceID() {
+	c.DeviceID = newUUID()
+	c.deviceIDLastRotated = time.Now()
+}
+
+// ShouldRotateDeviceID reports whether the client should rotate its
+// DeviceID based on deviceIDRotateInterval. Returns true when rotation
+// is enabled and the interval has elapsed since the last rotation.
+func (c *Client) ShouldRotateDeviceID() bool {
+	if c.deviceIDRotateInterval <= 0 {
+		return false
+	}
+	return time.Since(c.deviceIDLastRotated) >= c.deviceIDRotateInterval
 }

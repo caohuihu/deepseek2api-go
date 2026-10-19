@@ -20,7 +20,8 @@ func main() {
 	}
 
 	convs := handlers.NewConvStore(cfg.ConversationTTL, cfg.MaxConvs)
-	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts, cfg.PowJitterMin, cfg.PowJitterMax), convs)
+	rotateInterval := time.Duration(cfg.DeviceIDRotateHours) * time.Hour
+	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts, cfg.PowJitterMin, cfg.PowJitterMax, rotateInterval), convs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +53,11 @@ func main() {
 		log.Printf("  request jitter           : %s ~ %s", cfg.RequestJitterMin, cfg.RequestJitterMax)
 		log.Printf("  pow jitter               : %s ~ %s", cfg.PowJitterMin, cfg.PowJitterMax)
 		log.Printf("  session create jitter    : %s", cfg.SessionCreateJitter)
+		if cfg.DeviceIDRotateHours > 0 {
+			log.Printf("  device ID rotation       : every %dh", cfg.DeviceIDRotateHours)
+		} else {
+			log.Printf("  device ID rotation       : disabled")
+		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
