@@ -91,10 +91,16 @@ type Handler struct {
 	cfg   *config.Config
 	pool  *AccountPool
 	convs *ConvStore
+	limiter *AccountLimiter
 }
 
 func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
-	return &Handler{cfg: cfg, pool: pool, convs: convs}
+	return &Handler{
+		cfg:     cfg,
+		pool:    pool,
+		convs:   convs,
+		limiter: NewAccountLimiter(cfg.AccountQPM),
+	}
 }
 
 // ---- OpenAI wire types ----
@@ -320,7 +326,12 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	err = conv.Client.Completion(r.Context(), input, cb)
+	// Rate-limit per-account to stay under DeepSeek's anti-fraud thresholds.
+	// Blocks until a quota token and concurrency slot are both available.
+	release := h.limiter.Wait(conv.Client.DeviceID, h.cfg.AccountQPM, h.cfg.MaxConcurrentPerAccount)
+	defer release()
+
+	err = h.chatWithRetry(r.Context(), conv, input, cb)
 
 	// Register the continuation key even on partial streams: the ready event
 	// already advanced the parent message id, so follow-ups can chain.
@@ -435,6 +446,57 @@ func mapUpstreamError(err error) (int, string) {
 		}
 	}
 	return http.StatusBadGateway, "deepseek upstream error: " + err.Error()
+}
+
+// chatWithRetry calls conv.Client.Completion with exponential-backoff retry
+// on 429 responses, rotating to a different account on each retry.
+func (h *Handler) chatWithRetry(ctx context.Context, conv *Conversation, input deepseek.CompletionInput, cb *deepseek.StreamCallbacks) error {
+	var lastErr error
+	baseDelay := h.cfg.RetryBaseDelay
+	if baseDelay <= 0 {
+		baseDelay = 2 * time.Second
+	}
+	for attempt := 0; attempt <= h.cfg.RetryMaxAttempts; attempt++ {
+		if attempt > 0 {
+			// Switch to a different account for retry.
+			conv.Client = h.pool.Pick()
+			input.SessionID = "" // force fresh session on new account
+		}
+		lastErr = h.doCompletionWithRetry(ctx, conv.Client, input, cb, baseDelay, attempt)
+		if lastErr == nil {
+			return nil
+		}
+		var ae *deepseek.APIError
+		if !errors.As(lastErr, &ae) || ae.HTTPStatus != 429 {
+			break // non-429 error: don't retry
+		}
+		wait := baseDelay * time.Duration(1<<uint(attempt-1)) // 2s, 4s, 8s...
+		if wait > time.Minute*5 {
+			wait = time.Minute * 5
+		}
+		log.Printf("chat: account rate-limited (429), retry %d/%d in %s", attempt+1, h.cfg.RetryMaxAttempts, wait.Round(time.Second))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return lastErr
+}
+
+// doCompletionWithRetry handles session setup and the actual Completion call.
+// If the session is fresh (new), it tries to reuse an existing one first.
+func (h *Handler) doCompletionWithRetry(ctx context.Context, client *deepseek.Client, input deepseek.CompletionInput, cb *deepseek.StreamCallbacks, baseDelay time.Duration, attempt int) error {
+	if input.SessionID == "" {
+		newCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		sid, err := client.CreateSession(newCtx)
+		if err != nil {
+			return err
+		}
+		input.SessionID = sid
+	}
+	return client.Completion(ctx, input, cb)
 }
 
 func randHex(n int) string {

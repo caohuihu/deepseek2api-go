@@ -42,10 +42,13 @@ func main() {
 
 	go func() {
 		log.Printf("deepseek2api listening on :%s", cfg.Port)
-		log.Printf("  upstream    : %s", cfg.BaseURL)
-		log.Printf("  accounts    : %d", len(cfg.Accounts))
-		log.Printf("  default     : %s", cfg.DefaultModel)
-		log.Printf("  conv ttl    : %s", cfg.ConversationTTL)
+		log.Printf("  upstream           : %s", cfg.BaseURL)
+		log.Printf("  accounts           : %d", len(cfg.Accounts))
+		log.Printf("  default model      : %s", cfg.DefaultModel)
+		log.Printf("  conv ttl           : %s", cfg.ConversationTTL)
+		log.Printf("  account qpm        : %d", cfg.AccountQPM)
+		log.Printf("  max concurrent/account: %d", cfg.MaxConcurrentPerAccount)
+		log.Printf("  retry max attempts : %d (base %s)", cfg.RetryMaxAttempts, cfg.RetryBaseDelay)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
