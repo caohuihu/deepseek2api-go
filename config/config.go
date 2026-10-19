@@ -15,7 +15,7 @@ type Config struct {
 	Accounts                  []string // DeepSeek web tokens, one per account
 	AccountsFile              string
 	DefaultModel              string
-	ConversationTTL           time.Duration
+	ConversationTTLOptions    []time.Duration // per-conversation random TTL pool; empty = never delete
 	MaxConvs                  int
 	AccountQPM                int // per-account requests/min (default 30)
 	MaxConcurrentPerAccount   int // in-flight concurrency per account (default 5)
@@ -43,7 +43,7 @@ func Load() (*Config, error) {
 		BaseURL:                   strings.TrimRight(env("DEEPSEEK_BASE_URL", "https://chat.deepseek.com"), "/"),
 		AccountsFile:              env("DEEPSEEK_ACCOUNTS_FILE", "accounts.txt"),
 		DefaultModel:              env("DEFAULT_MODEL", "deepseek-chat"),
-		ConversationTTL:           30 * time.Minute,
+		ConversationTTLOptions:    parseDurationListEnv("CONVERSATION_TTL_OPTIONS", []string{"10m", "60m", "2h", "5h", "0"}),
 		MaxConvs:                  1024,
 		AccountQPM:                parseIntEnv("ACCOUNT_QPM", 6),
 		MaxConcurrentPerAccount:   parseIntEnv("MAX_CONCURRENT_PER_ACCOUNT", 2),
@@ -59,12 +59,11 @@ func Load() (*Config, error) {
 	if cfg.ProxyAPIKey == "" {
 		return nil, fmt.Errorf("PROXY_API_KEY is required")
 	}
+	// Legacy: single CONVERSATION_TTL value still supported (backward compat).
 	if v := os.Getenv("CONVERSATION_TTL"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid CONVERSATION_TTL: %w", err)
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.ConversationTTLOptions = []time.Duration{d}
 		}
-		cfg.ConversationTTL = d
 	}
 	if v := os.Getenv("MAX_CONVERSATIONS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -129,4 +128,36 @@ func parseDurationEnv(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// parseDurationListEnv parses a comma-separated list of durations from an
+// environment variable. "0" in the list is interpreted as time.Duration(0),
+// meaning "never expire". If the variable is empty, the provided defaults are
+// used.
+func parseDurationListEnv(key string, def []string) []time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		out := make([]time.Duration, len(def))
+		for i, s := range def {
+			out[i], _ = time.ParseDuration(s)
+		}
+		return out
+	}
+	var out []time.Duration
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if d, err := time.ParseDuration(s); err == nil {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		out = make([]time.Duration, len(def))
+		for i, s := range def {
+			out[i], _ = time.ParseDuration(s)
+		}
+	}
+	return out
 }

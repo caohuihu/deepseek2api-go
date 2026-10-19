@@ -19,7 +19,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	convs := handlers.NewConvStore(cfg.ConversationTTL, cfg.MaxConvs)
+	convs := handlers.NewConvStore(cfg.ConversationTTLOptions, cfg.MaxConvs)
 	rotateInterval := time.Duration(cfg.DeviceIDRotateHours) * time.Hour
 	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts, cfg.PowJitterMin, cfg.PowJitterMax, rotateInterval), convs)
 
@@ -46,7 +46,7 @@ func main() {
 		log.Printf("  upstream           : %s", cfg.BaseURL)
 		log.Printf("  accounts           : %d", len(cfg.Accounts))
 		log.Printf("  default model      : %s", cfg.DefaultModel)
-		log.Printf("  conv ttl           : %s", cfg.ConversationTTL)
+		log.Printf("  conv ttl               : random from %v", cfg.ConversationTTLOptions)
 		log.Printf("  account qpm              : %d", cfg.AccountQPM)
 		log.Printf("  max concurrent/account   : %d", cfg.MaxConcurrentPerAccount)
 		log.Printf("  retry max attempts       : %d (base %s)", cfg.RetryMaxAttempts, cfg.RetryBaseDelay)

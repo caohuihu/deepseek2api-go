@@ -26,8 +26,13 @@ services:
       - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek-chat}
 
       # ─── 会话管理 ──────────────────────────────────────────────────
-      # 空闲会话在上游删除前的等待时间
-      - CONVERSATION_TTL=${CONVERSATION_TTL:-30m}
+      # 旧版：单个固定 TTL（已弃用，保留向后兼容）
+      # - CONVERSATION_TTL=${CONVERSATION_TTL:-30m}
+      #
+      # 新版：随机 TTL 池，每次新建会话随机选一个，打乱删除节奏
+      #       0 = 永不删除（有些会话永远留着，模拟真实用户不删对话的习惯）
+      #       示例：10m,60m,2h,5h,0 → 5个选项随机抽，约20%概率永不删除
+      - CONVERSATION_TTL_OPTIONS=${CONVERSATION_TTL_OPTIONS:-10m,60m,2h,5h,0}
       # 内存中最多保留的会话数（LRU 淘汰）
       - MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-1024}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log"
+	rand2 "math/rand"
 	"sync"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 // Conversation is one live DeepSeek session plus the bookkeeping needed to
 // continue it (the last assistant message id and cumulative usage).
+// Each conversation carries its own random TTL so idle-session cleanup is
+// unpredictable — a hard uniform TTL is a machine fingerprint.
 type Conversation struct {
 	mu        sync.Mutex
 	Client    *deepseek.Client
@@ -23,6 +26,7 @@ type Conversation struct {
 	LastUsage int64
 	HasUsage  bool
 	LastUsed  time.Time
+	ttl       time.Duration // per-conversation TTL; 0 = never delete
 }
 
 // Lock guards the conversation for one completion round trip.
@@ -33,22 +37,32 @@ func (c *Conversation) Unlock() {
 }
 
 // ConvStore maps derived conversation keys and DeepSeek session ids to
-// conversations, and removes idle sessions upstream after a TTL.
+// conversations, and removes idle sessions upstream after each session's own
+// randomized TTL.
 type ConvStore struct {
-	ttl       time.Duration
-	maxSize   int
-	mu        sync.Mutex
-	byPrefix  map[string]*Conversation
-	bySession map[string]*Conversation
+	ttlOptions []time.Duration // possible TTL values; empty duration means "never delete"
+	maxSize    int
+	mu         sync.Mutex
+	byPrefix   map[string]*Conversation
+	bySession  map[string]*Conversation
 }
 
-func NewConvStore(ttl time.Duration, maxSize int) *ConvStore {
+func NewConvStore(ttlOptions []time.Duration, maxSize int) *ConvStore {
 	return &ConvStore{
-		ttl:       ttl,
-		maxSize:   maxSize,
-		byPrefix:  make(map[string]*Conversation),
-		bySession: make(map[string]*Conversation),
+		ttlOptions: ttlOptions,
+		maxSize:    maxSize,
+		byPrefix:   make(map[string]*Conversation),
+		bySession:  make(map[string]*Conversation),
 	}
+}
+
+// pickRandomTTL returns a random TTL from the configured options.
+// An empty duration in the slice represents "never delete".
+func (s *ConvStore) pickRandomTTL() time.Duration {
+	if len(s.ttlOptions) == 0 {
+		return 30 * time.Minute
+	}
+	return s.ttlOptions[rand2.Intn(len(s.ttlOptions))]
 }
 
 func (s *ConvStore) ByPrefix(key string) *Conversation {
@@ -68,6 +82,10 @@ func (s *ConvStore) BySession(sessionID string) *Conversation {
 func (s *ConvStore) Register(prefixKey string, conv *Conversation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Assign a random TTL on first registration (fresh conversation).
+	if conv.ttl == 0 {
+		conv.ttl = s.pickRandomTTL()
+	}
 	s.bySession[conv.SessionID] = conv
 	if prefixKey != "" {
 		s.byPrefix[prefixKey] = conv
@@ -97,7 +115,18 @@ func (s *ConvStore) removeLocked(sessionKey string, conv *Conversation) {
 // SweepLoop deletes DeepSeek sessions that have been idle past the TTL so the
 // account's session list stays clean.
 func (s *ConvStore) SweepLoop(ctx context.Context) {
-	interval := s.ttl / 6
+	// Use 1/6 of the shortest non-zero TTL as the sweep interval,
+	// but never less than 1 minute so we don't hammer upstream.
+	minTTL := time.Hour * 24
+	for _, d := range s.ttlOptions {
+		if d > 0 && d < minTTL {
+			minTTL = d
+		}
+	}
+	if minTTL == time.Hour*24 {
+		minTTL = time.Hour // fallback if all options are "never"
+	}
+	interval := minTTL / 6
 	if interval < time.Minute {
 		interval = time.Minute
 	}
@@ -117,7 +146,11 @@ func (s *ConvStore) sweepOnce(ctx context.Context) {
 	s.mu.Lock()
 	var expired []*Conversation
 	for key, c := range s.bySession {
-		if time.Since(c.LastUsed) >= s.ttl {
+		// ttl == 0 means "never delete".
+		if c.ttl == 0 {
+			continue
+		}
+		if time.Since(c.LastUsed) >= c.ttl {
 			expired = append(expired, c)
 			s.removeLocked(key, c)
 		}
@@ -132,7 +165,7 @@ func (s *ConvStore) sweepOnce(ctx context.Context) {
 			log.Printf("conversation cleanup: delete session %s failed: %v", conv.SessionID, err)
 			// Queue for a retry on the next sweep; do not hammer upstream.
 			s.mu.Lock()
-			conv.LastUsed = time.Now().Add(-s.ttl)
+			conv.LastUsed = time.Now().Add(-conv.ttl)
 			s.bySession[conv.SessionID] = conv
 			s.mu.Unlock()
 		}
