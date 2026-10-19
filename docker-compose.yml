@@ -32,12 +32,12 @@ services:
       - MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-1024}
 
       # ─── 风控限流 ──────────────────────────────────────────────────
-      # 每账号每分钟最大请求数（令牌桶），建议 20-50
-      # 值越大风险越高，建议从 30 开始逐步调整
-      - ACCOUNT_QPM=${ACCOUNT_QPM:-30}
+      # 每账号每分钟最大请求数（令牌桶），正常人约 1-6 QPM（10-60s/条）
+      # 若你使用频率更高可适当调高，但不建议超过 15
+      - ACCOUNT_QPM=${ACCOUNT_QPM:-6}
       # 每账号同时进行的最大并发请求数
-      # 建议不超过 5，过多并发易触发风控
-      - MAX_CONCURRENT_PER_ACCOUNT=${MAX_CONCURRENT_PER_ACCOUNT:-5}
+      # 单人正常浏览最多 1-2 个会话，设为 2 即可
+      - MAX_CONCURRENT_PER_ACCOUNT=${MAX_CONCURRENT_PER_ACCOUNT:-2}
 
       # ─── 429 重试策略 ──────────────────────────────────────────────
       # 遇到 429 时最大重试次数（每次重试自动切换账号）

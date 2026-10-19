@@ -145,8 +145,8 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 | `DEFAULT_MODEL` | `deepseek-chat` | Model used when a request omits one |
 | `CONVERSATION_TTL` | `30m` | Idle time before a session is deleted upstream |
 | `MAX_CONVERSATIONS` | `1024` | Max sessions kept in memory (LRU eviction) |
-| `ACCOUNT_QPM` | `30` | Max requests per account per sliding minute |
-| `MAX_CONCURRENT_PER_ACCOUNT` | `5` | Max in-flight completions per account simultaneously |
+| `ACCOUNT_QPM` | `6` | 每账号每秒滑动窗口内最大请求数（正常人约 1-6 QPM，10-60s/条） |
+| `MAX_CONCURRENT_PER_ACCOUNT` | `2` | 每账号同时进行的最大并发请求数（单人正常最多 2 个会话） |
 | `RETRY_MAX_ATTEMPTS` | `3` | Max 429 retry attempts before giving up |
 | `RETRY_BASE_DELAY` | `2s` | Base delay for exponential backoff (actual waits: 2s, 4s, 8s…) |
 | `REQUEST_JITTER_MIN` | `200ms` | Min random delay (ms) before each completion request |
