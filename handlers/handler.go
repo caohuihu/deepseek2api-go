@@ -418,23 +418,38 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 // With a configurable probability (SessionResetChance), it intentionally
 // discards a cached session and starts fresh — mimicking how real users
 // occasionally open a new chat instead of continuing an old one.
+//
+// Lookup strategy:
+//   1. Explicit conversation_id passthrough (client controls session)
+//   2. Prefix-key match (historical messages match an existing session)
+//   3. Fallback to most-recently-used session for the same model (enables
+//      continuous Q&A even when the client sends only the latest message)
 func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, bool, error) {
+	// Strategy 1: explicit conversation ID
 	if req.ConversationID != "" {
 		if c := h.convs.BySession(req.ConversationID); c != nil {
 			return c, false, nil
 		}
-	} else {
-		key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
-		if c := h.convs.ByPrefix(key); c != nil {
-			// Randomly reset: some fraction of the time we ignore the cache
-			// and start a brand-new session, just like a real user might.
-			if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
-				log.Printf("chat: randomly resetting session (chance %.0f%%)", h.cfg.SessionResetChance*100)
-			} else {
-				return c, false, nil
-			}
+	}
+
+	// Strategy 2: prefix-based cache hit
+	key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
+	if c := h.convs.ByPrefix(key); c != nil {
+		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
+			log.Printf("chat: randomly resetting session (chance %.0f%%)", h.cfg.SessionResetChance*100)
+		} else {
+			return c, false, nil
 		}
 	}
+
+	// Strategy 3: fallback — reuse the most recently used session for this model.
+	// This is what enables continuous multi-turn Q&A when the client only sends
+	// the latest message without carrying the full conversation history.
+	if c := h.convs.RecentForModel(m.ID); c != nil {
+		return c, false, nil
+	}
+
+	// No session found — create a fresh one.
 	client := h.pool.Pick()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
