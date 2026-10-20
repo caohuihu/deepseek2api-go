@@ -176,17 +176,3 @@ func parseFloatEnv(key string, def float64) float64 {
 	}
 	return def
 }
-
-func envBool(key string, def bool) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	switch strings.ToLower(v) {
-	case "true", "1", "yes", "on":
-		return true
-	case "false", "0", "no", "off":
-		return false
-	}
-	return def
-}
