@@ -1,0 +1,31 @@
+services:
+  ds2apigo:
+    image: ghcr.io/caohuihu/ds2-go:latest
+    pull_policy: always
+    ports:
+      - "8022:8080"
+    environment:
+      - PROXY_API_KEY=${PROXY_API_KEY}
+      - DEEPSEEK_TOKEN=${DEEPSEEK_TOKEN:-}
+      - DEEPSEEK_ACCOUNTS_FILE=${DEEPSEEK_ACCOUNTS_FILE:-accounts.txt}
+      - PORT=${PORT:-8080}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://chat.deepseek.com}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek-chat}
+      - CONVERSATION_TTL_OPTIONS=${CONVERSATION_TTL_OPTIONS:-10m,60m,2h,5h,0}
+      - MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-1024}
+      - ACCOUNT_QPM=${ACCOUNT_QPM:-6}
+      - MAX_CONCURRENT_PER_ACCOUNT=${MAX_CONCURRENT_PER_ACCOUNT:-2}
+      - RETRY_MAX_ATTEMPTS=${RETRY_MAX_ATTEMPTS:-3}
+      - RETRY_BASE_DELAY=${RETRY_BASE_DELAY:-2s}
+      - REQUEST_JITTER_MIN=${REQUEST_JITTER_MIN:-200ms}
+      - REQUEST_JITTER_MAX=${REQUEST_JITTER_MAX:-800ms}
+      - POW_JITTER_MIN=${POW_JITTER_MIN:-30ms}
+      - POW_JITTER_MAX=${POW_JITTER_MAX:-150ms}
+      - SESSION_CREATE_JITTER=${SESSION_CREATE_JITTER:-200ms}
+      - DEVICE_ID_ROTATE_HOURS=${DEVICE_ID_ROTATE_HOURS:-0}
+      - REQUEST_READ_TIME_MIN=${REQUEST_READ_TIME_MIN:-5s}
+      - REQUEST_READ_TIME_MAX=${REQUEST_READ_TIME_MAX:-30s}
+      - SESSION_RESET_CHANCE=${SESSION_RESET_CHANCE:-0.15}
+    volumes:
+      - ./accounts.txt:/app/accounts.txt:ro
+    restart: unless-stopped
