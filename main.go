@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -53,11 +54,15 @@ func main() {
 		log.Printf("  request jitter           : %s ~ %s", cfg.RequestJitterMin, cfg.RequestJitterMax)
 		log.Printf("  pow jitter               : %s ~ %s", cfg.PowJitterMin, cfg.PowJitterMax)
 		log.Printf("  session create jitter    : %s", cfg.SessionCreateJitter)
-		if cfg.DeviceIDRotateHours > 0 {
-			log.Printf("  device ID rotation       : every %dh", cfg.DeviceIDRotateHours)
-		} else {
-			log.Printf("  device ID rotation       : disabled")
-		}
+		log.Printf("  device ID rotation       : %s", func() string {
+			if cfg.DeviceIDRotateHours > 0 {
+				return fmt.Sprintf("every %dh", cfg.DeviceIDRotateHours)
+			}
+			return "disabled"
+		}())
+		log.Printf("  request read time        : %s ~ %s", cfg.RequestReadTimeMin, cfg.RequestReadTimeMax)
+		log.Printf("  session reset chance     : %.0f%%", cfg.SessionResetChance*100)
+		log.Printf("  thinking random          : %v", cfg.ThinkingRandom)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

@@ -155,7 +155,11 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 | `POW_JITTER_MIN` | `30ms` | Min artificial delay (ms) when solving POW challenge |
 | `POW_JITTER_MAX` | `150ms` | Max artificial delay (ms) when solving POW challenge |
 | `SESSION_CREATE_JITTER` | `200ms` | Random delay before creating a new DeepSeek session |
-| `DEVICE_ID_ROTATE_HOURS` | `0` | Rotate device ID every N hours (0 = disabled) |
+| `DEVICE_ID_ROTATE_HOURS` | `0` | Device ID 定期轮换间隔（小时，0=不轮换） |
+| `REQUEST_READ_TIME_MIN` | `5s` | 同一账号两次请求之间的最小等待（秒），模拟阅读回复 |
+| `REQUEST_READ_TIME_MAX` | `30s` | 同一账号两次请求之间的最大等待（秒） |
+| `SESSION_RESET_CHANCE` | `0.15` | 每次请求有 X% 概率忽略缓存会话、建新对话（真人习惯） |
+| `THINKING_RANDOM` | `true` | 非 reasoner 模型随机关闭 thinking（默认 40% 概率关闭） |
 
 ## Multi-turn conversations
 

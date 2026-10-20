@@ -17,8 +17,8 @@ type Config struct {
 	DefaultModel              string
 	ConversationTTLOptions    []time.Duration // per-conversation random TTL pool; empty = never delete
 	MaxConvs                  int
-	AccountQPM                int // per-account requests/min (default 30)
-	MaxConcurrentPerAccount   int // in-flight concurrency per account (default 5)
+	AccountQPM                int // per-account requests/min (default 6)
+	MaxConcurrentPerAccount   int // in-flight concurrency per account (default 2)
 	RetryMaxAttempts          int // max 429 retry attempts (default 3)
 	RetryBaseDelay            time.Duration
 	RequestJitterMin          time.Duration // min random delay before each completion (default 200ms)
@@ -27,6 +27,10 @@ type Config struct {
 	PowJitterMax              time.Duration // max artificial delay when solving POW (default 150ms)
 	SessionCreateJitter       time.Duration // random delay before creating a new session (default 200ms)
 	DeviceIDRotateHours       int           // rotate deviceID every N hours (0 = disabled, default 0)
+	RequestReadTimeMin        time.Duration // min cooldown between requests to same account (simulate reading reply)
+	RequestReadTimeMax        time.Duration // max cooldown between requests to same account
+	SessionResetChance        float64       // probability of ignoring cached session and starting fresh (0-1)
+	ThinkingRandom            bool          // randomly disable thinking for non-reasoner models
 }
 
 // Load reads configuration from the environment. Accounts come from
@@ -55,6 +59,10 @@ func Load() (*Config, error) {
 		PowJitterMax:              parseDurationEnv("POW_JITTER_MAX", 150*time.Millisecond),
 		SessionCreateJitter:       parseDurationEnv("SESSION_CREATE_JITTER", 200*time.Millisecond),
 		DeviceIDRotateHours:       parseIntEnv("DEVICE_ID_ROTATE_HOURS", 0),
+		RequestReadTimeMin:        parseDurationEnv("REQUEST_READ_TIME_MIN", 5*time.Second),
+		RequestReadTimeMax:        parseDurationEnv("REQUEST_READ_TIME_MAX", 30*time.Second),
+		SessionResetChance:        parseFloatEnv("SESSION_RESET_CHANCE", 0.15),
+		ThinkingRandom:            envBool("THINKING_RANDOM", true),
 	}
 	if cfg.ProxyAPIKey == "" {
 		return nil, fmt.Errorf("PROXY_API_KEY is required")
@@ -160,4 +168,27 @@ func parseDurationListEnv(key string, def []string) []time.Duration {
 		}
 	}
 	return out
+}
+
+func parseFloatEnv(key string, def float64) float64 {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			return f
+		}
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	}
+	return def
 }

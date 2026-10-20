@@ -11,6 +11,7 @@ import (
 	rand2 "math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -93,6 +94,10 @@ type Handler struct {
 	pool  *AccountPool
 	convs *ConvStore
 	limiter *AccountLimiter
+	mu      sync.Mutex // protects lastRequestAt
+	// lastRequestAt tracks the time of the last request per client pointer,
+	// enforcing a cooldown to simulate a human reading the reply.
+	lastRequestAt map[*deepseek.Client]time.Time
 }
 
 func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
@@ -101,6 +106,7 @@ func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
 		pool:    pool,
 		convs:   convs,
 		limiter: NewAccountLimiter(cfg.AccountQPM),
+		lastRequestAt: make(map[*deepseek.Client]time.Time),
 	}
 	// Start background goroutine for periodic DeviceID rotation.
 	if cfg.DeviceIDRotateHours > 0 {
@@ -294,7 +300,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	input := deepseek.CompletionInput{
 		SessionID:       conv.SessionID,
-		ThinkingEnabled: m.Thinking,
+		ThinkingEnabled: m.Thinking && (!h.cfg.ThinkingRandom || rand2.Float64() > 0.4),
 		SearchEnabled:   m.Search,
 		Prompt:          prompt,
 		RefFileIDs:      refFileIDs,
@@ -348,10 +354,16 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// Rate-limit per-account to stay under DeepSeek's anti-fraud thresholds.
 	// Blocks until a quota token and concurrency slot are both available.
+	// Also enforces a minimum cooldown between requests to the same account
+	// (simulates a human reading the reply before asking the next question).
+	h.enforceReadTimeCooldown(conv.Client)
 	release := h.limiter.Wait(conv.Client.DeviceID, h.cfg.AccountQPM, h.cfg.MaxConcurrentPerAccount)
 	defer release()
 
 	err = h.chatWithRetry(r.Context(), conv, input, cb)
+
+	// Record this request time for the next cooldown calculation.
+	h.recordRequestTime(conv.Client)
 
 	// Register the continuation key even on partial streams: the ready event
 	// already advanced the parent message id, so follow-ups can chain.
@@ -403,6 +415,9 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 }
 
 // conversation finds a usable conversation or creates a new DeepSeek session.
+// With a configurable probability (SessionResetChance), it intentionally
+// discards a cached session and starts fresh — mimicking how real users
+// occasionally open a new chat instead of continuing an old one.
 func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, bool, error) {
 	if req.ConversationID != "" {
 		if c := h.convs.BySession(req.ConversationID); c != nil {
@@ -411,7 +426,13 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	} else {
 		key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
 		if c := h.convs.ByPrefix(key); c != nil {
-			return c, false, nil
+			// Randomly reset: some fraction of the time we ignore the cache
+			// and start a brand-new session, just like a real user might.
+			if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
+				log.Printf("chat: randomly resetting session (chance %.0f%%)", h.cfg.SessionResetChance*100)
+			} else {
+				return c, false, nil
+			}
 		}
 	}
 	client := h.pool.Pick()
@@ -533,4 +554,37 @@ func randHex(n int) string {
 func mustJSON(s string) []byte {
 	b, _ := json.Marshal(s)
 	return b
+}
+
+// recordRequestTime updates the last-request timestamp for this client
+// so the next request will enforce the read-time cooldown.
+func (h *Handler) recordRequestTime(client *deepseek.Client) {
+	h.mu.Lock()
+	h.lastRequestAt[client] = time.Now()
+	h.mu.Unlock()
+}
+
+// enforceReadTimeCooldown waits until enough time has passed since the last
+// request to this account, simulating a human reading the reply before
+// sending the next message. This creates a natural inter-request rhythm
+// on top of the QPM token bucket.
+func (h *Handler) enforceReadTimeCooldown(client *deepseek.Client) {
+	if h.cfg.RequestReadTimeMin <= 0 && h.cfg.RequestReadTimeMax <= 0 {
+		return
+	}
+	h.mu.Lock()
+	last := h.lastRequestAt[client]
+	h.mu.Unlock()
+
+	if !last.IsZero() {
+		minWait := h.cfg.RequestReadTimeMin
+		maxWait := h.cfg.RequestReadTimeMax
+		if maxWait > minWait {
+			minWait = time.Duration(rand2.Int63n(int64(maxWait-minWait))) + minWait
+		}
+		elapsed := time.Since(last)
+		if elapsed < minWait {
+			time.Sleep(minWait - elapsed)
+		}
+	}
 }
