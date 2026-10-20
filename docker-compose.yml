@@ -27,8 +27,6 @@ services:
       - REQUEST_READ_TIME_MAX=${REQUEST_READ_TIME_MAX:-30s}
       # 会话随机重置概率：每次有 X% 概率忽略缓存会话建新对话，模拟真人开新聊天
       - SESSION_RESET_CHANCE=${SESSION_RESET_CHANCE:-0.15}
-      # Thinking 随机开关：非 reasoner 模型有 40% 概率临时关闭 thinking
-      - THINKING_RANDOM=${THINKING_RANDOM:-true}
     volumes:
       - ./accounts.txt:/app/accounts.txt:ro
     restart: unless-stopped

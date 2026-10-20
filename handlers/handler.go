@@ -300,7 +300,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	input := deepseek.CompletionInput{
 		SessionID:       conv.SessionID,
-		ThinkingEnabled: m.Thinking && (!h.cfg.ThinkingRandom || rand2.Float64() > 0.4),
+		ThinkingEnabled: m.Thinking,
 		SearchEnabled:   m.Search,
 		Prompt:          prompt,
 		RefFileIDs:      refFileIDs,

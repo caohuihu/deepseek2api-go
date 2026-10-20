@@ -62,7 +62,6 @@ func main() {
 		}())
 		log.Printf("  request read time        : %s ~ %s", cfg.RequestReadTimeMin, cfg.RequestReadTimeMax)
 		log.Printf("  session reset chance     : %.0f%%", cfg.SessionResetChance*100)
-		log.Printf("  thinking random          : %v", cfg.ThinkingRandom)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

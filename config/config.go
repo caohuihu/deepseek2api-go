@@ -30,7 +30,6 @@ type Config struct {
 	RequestReadTimeMin        time.Duration // min cooldown between requests to same account (simulate reading reply)
 	RequestReadTimeMax        time.Duration // max cooldown between requests to same account
 	SessionResetChance        float64       // probability of ignoring cached session and starting fresh (0-1)
-	ThinkingRandom            bool          // randomly disable thinking for non-reasoner models
 }
 
 // Load reads configuration from the environment. Accounts come from
@@ -62,7 +61,6 @@ func Load() (*Config, error) {
 		RequestReadTimeMin:        parseDurationEnv("REQUEST_READ_TIME_MIN", 5*time.Second),
 		RequestReadTimeMax:        parseDurationEnv("REQUEST_READ_TIME_MAX", 30*time.Second),
 		SessionResetChance:        parseFloatEnv("SESSION_RESET_CHANCE", 0.15),
-		ThinkingRandom:            envBool("THINKING_RANDOM", true),
 	}
 	if cfg.ProxyAPIKey == "" {
 		return nil, fmt.Errorf("PROXY_API_KEY is required")
