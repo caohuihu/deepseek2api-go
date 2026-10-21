@@ -1,5 +1,5 @@
 services:
-  ds2apigo:
+  ds2go:
     image: ghcr.io/caohuihu/ds2-go:latest
     pull_policy: always
     ports:
