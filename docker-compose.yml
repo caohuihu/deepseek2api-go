@@ -25,7 +25,10 @@ services:
       # 账号间冷却间隔（秒）：模拟阅读回复的时间，避免连续发送
       - REQUEST_READ_TIME_MIN=${REQUEST_READ_TIME_MIN:-5s}
       - REQUEST_READ_TIME_MAX=${REQUEST_READ_TIME_MAX:-30s}
-      # 会话随机重置概率：每次有 X% 概率忽略缓存会话建新对话，模拟真人开新聊天
+      # 会话随机重置概率：每次有 X% 概率开新会话（影响 Strategy 2 和 Strategy 3）
+      # - Strategy 2（prefix 命中时）：X% 概率主动放弃缓存、建新对话
+      # - Strategy 3（兜底最近会话时）：X% 概率放弃复用、开新对话
+      # 值越大会话越短，值越小越容易保持长对话
       - SESSION_RESET_CHANCE=${SESSION_RESET_CHANCE:-0.15}
     volumes:
       - ./accounts.txt:/app/accounts.txt:ro
