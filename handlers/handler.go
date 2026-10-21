@@ -445,8 +445,14 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	// Strategy 3: fallback — reuse the most recently used session for this model.
 	// This is what enables continuous multi-turn Q&A when the client only sends
 	// the latest message without carrying the full conversation history.
+	// When SessionResetChance is active, occasionally discard the cached session
+	// and start fresh, mimicking how real users open a new chat.
 	if c := h.convs.RecentForModel(m.ID); c != nil {
-		return c, false, nil
+		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
+			log.Printf("chat: randomly resetting session via fallback (chance %.0f%%)", h.cfg.SessionResetChance*100)
+		} else {
+			return c, false, nil
+		}
 	}
 
 	// No session found — create a fresh one.
