@@ -27,6 +27,7 @@ type Conversation struct {
 	HasUsage  bool
 	LastUsed  time.Time
 	ttl       time.Duration // per-conversation TTL; 0 = never delete
+	ModelID   string        // the model this session was created for
 }
 
 // Lock guards the conversation for one completion round trip.
@@ -71,20 +72,18 @@ func (s *ConvStore) ByPrefix(key string) *Conversation {
 	return s.byPrefix[key]
 }
 
-// RecentForModel returns the most recently used conversation for the given model,
-// or nil if no conversation exists for that model yet. This is used as a fallback
-// so that a client which sends only its latest message (without full history)
-// still continues the same DeepSeek session across turns.
+// RecentForModel returns the most recently used conversation for the given
+// model, or nil if no conversation exists for that model yet. This is used
+// as a fallback so that a client which sends only its latest message (without
+// full history) still continues the same DeepSeek session across turns.
 func (s *ConvStore) RecentForModel(modelID string) *Conversation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var best *Conversation
 	for _, c := range s.bySession {
-		// We can't inspect the model from Conversation directly; instead we
-		// check the prefix key. The first entry for this model found in
-		// byPrefix is sufficient — bySession is populated from Register which
-		// always runs after the session is created, so any session in
-		// bySession was registered under at least one prefix key.
+		if c.ModelID != modelID {
+			continue // skip conversations for other models
+		}
 		if best == nil || c.LastUsed.After(best.LastUsed) {
 			best = c
 		}

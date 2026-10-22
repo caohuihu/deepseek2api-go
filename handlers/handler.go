@@ -463,7 +463,7 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	if err != nil {
 		return nil, false, err
 	}
-	return &Conversation{Client: client, SessionID: sessionID, LastUsed: time.Now()}, true, nil
+	return &Conversation{Client: client, SessionID: sessionID, LastUsed: time.Now(), ModelID: m.ID}, true, nil
 }
 
 func (h *Handler) buildUsage(conv *Conversation, total int64, replyChars int) map[string]int {
