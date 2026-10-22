@@ -50,7 +50,7 @@ func Load() (*Config, error) {
 		ConversationTTLOptions:    parseDurationListEnv("CONVERSATION_TTL_OPTIONS", []string{"10m", "60m", "2h", "5h", "0"}),
 		MaxConvs:                  1024,
 		AccountQPM:                parseIntEnv("ACCOUNT_QPM", 6),
-		MaxConcurrentPerAccount:   parseIntEnv("MAX_CONCURRENT_PER_ACCOUNT", 2),
+		MaxConcurrentPerAccount:   parseIntEnv("MAX_CONCURRENT_PER_ACCOUNT", 5),
 		RetryMaxAttempts:          parseIntEnv("RETRY_MAX_ATTEMPTS", 3),
 		RetryBaseDelay:            d,
 		RequestJitterMin:          parseDurationEnv("REQUEST_JITTER_MIN", 200*time.Millisecond),

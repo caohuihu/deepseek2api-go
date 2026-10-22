@@ -147,7 +147,7 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 | `CONVERSATION_TTL_OPTIONS` | `10m,60m,2h,5h,0` | 会话 TTL 随机池，逗号分隔；`0` 表示永不删除。每次新建会话随机选取一个，让清理时间不可预测 |
 | `MAX_CONVERSATIONS` | `1024` | Max sessions kept in memory (LRU eviction) |
 | `ACCOUNT_QPM` | `6` | 每账号每秒滑动窗口内最大请求数（正常人约 1-6 QPM，10-60s/条） |
-| `MAX_CONCURRENT_PER_ACCOUNT` | `2` | 每账号同时进行的最大并发请求数（单人正常最多 2 个会话） |
+| `MAX_CONCURRENT_PER_ACCOUNT` | `5` | 每账号同时进行的最大并发请求数（= 同时运行的网页会话数上限） |
 | `RETRY_MAX_ATTEMPTS` | `3` | Max 429 retry attempts before giving up |
 | `RETRY_BASE_DELAY` | `2s` | Base delay for exponential backoff (actual waits: 2s, 4s, 8s…) |
 | `REQUEST_JITTER_MIN` | `200ms` | Min random delay (ms) before each completion request |
