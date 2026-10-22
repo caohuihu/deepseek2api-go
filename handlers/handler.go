@@ -498,11 +498,12 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	return conv, true, nil
 }
 
-// coalesceOrCreate either finds an in-flight session creation for the given
-// prefix and waits for it, or creates a new pending entry and spawns the
-// upstream session creation. When the session is created, all waiters are
-// released via the done channel.
+// coalesceOrCreate ensures all concurrent requests sharing the same prefix
+// reuse a single in-flight session creation. It holds the lock while creating
+// the entry so two simultaneous callers cannot both miss the map and each
+// spawn their own session.
 func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
+	// Phase 1: check / create entry while holding the lock.
 	h.pendingMu.Lock()
 	if entry, ok := h.pending[key]; ok {
 		h.pendingMu.Unlock()
@@ -517,44 +518,34 @@ func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
 			return nil, entry.ctx.Err()
 		}
 	}
-	// Create a new pending entry.
-	entry := &pendingEntry{
-		done: make(chan *Conversation, 1),
-		ctx:  context.Background(),
-	}
+	entry := &pendingEntry{done: make(chan *Conversation, 1), ctx: context.Background()}
 	h.pending[key] = entry
-	h.pendingMu.Unlock()
-
-	// Spawn the actual upstream session creation. On completion (success or
-	// failure), broadcast the result to all waiters and remove the entry.
+	// Spawn the goroutine while still holding the lock. No other caller can
+	// enter the create-path until we drop the lock below, preventing the
+	// classic double-creation race.
 	go func() {
+		defer h.pendingMu.Unlock() // release lock AFTER goroutine finishes
 		client := h.pool.Pick()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-
 		sessionID, err := client.CreateSession(ctx)
-		h.pendingMu.Lock()
-		delete(h.pending, key) // remove entry first so no new waiter blocks here
-		h.pendingMu.Unlock()
-
+		delete(h.pending, key)
 		if err != nil {
 			log.Printf("chat: session create failed: %v", err)
-			entry.done <- nil // signal failure
+			entry.done <- nil
 			return
 		}
-		conv := &Conversation{
-			Client:  client,
+		entry.done <- &Conversation{
+			Client:    client,
 			SessionID: sessionID,
-			LastUsed: time.Now(),
-			ModelID:  modelID,
+			LastUsed:  time.Now(),
+			ModelID:   modelID,
 		}
-		entry.done <- conv // broadcast success to all waiters
 	}()
-
-	// Wait for the upstream session creation to complete.
-	h.pendingMu.Lock()
-	entry = h.pending[key] // re-acquire in case another goroutine won the race
+	// Drop the lock so this caller can proceed to wait.
 	h.pendingMu.Unlock()
+
+	// Phase 2: wait for the upstream session to be created.
 	select {
 	case conv := <-entry.done:
 		if conv != nil {
