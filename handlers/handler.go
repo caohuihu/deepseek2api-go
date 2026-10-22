@@ -98,6 +98,19 @@ type Handler struct {
 	// lastRequestAt tracks the time of the last request per client pointer,
 	// enforcing a cooldown to simulate a human reading the reply.
 	lastRequestAt map[*deepseek.Client]time.Time
+
+	// pendingMu protects pending so concurrent requests for the same
+	// conversation prefix deduplicate instead of each spawning their own
+	// upstream session.
+	pendingMu sync.Mutex
+	pending   map[string]*pendingEntry // key = PrefixKey (prompt hash)
+}
+
+// pendingEntry represents an in-flight session creation for one prompt prefix.
+// Waiters block on the done channel until the session is created (or cancelled).
+type pendingEntry struct {
+	done chan *Conversation
+	ctx  context.Context
 }
 
 func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
@@ -107,6 +120,7 @@ func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
 		convs:   convs,
 		limiter: NewAccountLimiter(cfg.AccountQPM),
 		lastRequestAt: make(map[*deepseek.Client]time.Time),
+		pending:   make(map[string]*pendingEntry),
 	}
 	// Start background goroutine for periodic DeviceID rotation.
 	if cfg.DeviceIDRotateHours > 0 {
@@ -467,18 +481,84 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 			return c, false, nil
 		}
 	}
-	log.Printf("chat: strategy3 miss, creating new session for model=%s", m.ID)
+	log.Printf("chat: strategy3 miss, coalescing new session for model=%s prefix=%s", m.ID, key)
 
-	// No session found — create a fresh one.
-	client := h.pool.Pick()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	sessionID, err := client.CreateSession(ctx)
+	// Coalesce concurrent requests with the same prefix: instead of each
+	// spawning its own session, share one in-flight session creation.
+	conv, err := h.coalesceOrCreate(key, m.ID)
 	if err != nil {
 		return nil, false, err
 	}
-	log.Printf("chat: strategy3 new session created session=%s model=%s", sessionID[:8], m.ID)
-	return &Conversation{Client: client, SessionID: sessionID, LastUsed: time.Now(), ModelID: m.ID}, true, nil
+	log.Printf("chat: new session created session=%s model=%s", conv.SessionID[:8], m.ID)
+	return conv, true, nil
+}
+
+// coalesceOrCreate either finds an in-flight session creation for the given
+// prefix and waits for it, or creates a new pending entry and spawns the
+// upstream session creation. When the session is created, all waiters are
+// released via the done channel.
+func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
+	h.pendingMu.Lock()
+	if entry, ok := h.pending[key]; ok {
+		h.pendingMu.Unlock()
+		log.Printf("chat: coalescing onto existing in-flight session prefix=%s", key[:8])
+		select {
+		case conv := <-entry.done:
+			if conv != nil {
+				return conv, nil
+			}
+			return nil, context.Canceled
+		case <-entry.ctx.Done():
+			return nil, entry.ctx.Err()
+		}
+	}
+	// Create a new pending entry.
+	entry := &pendingEntry{
+		done: make(chan *Conversation, 1),
+		ctx:  context.Background(),
+	}
+	h.pending[key] = entry
+	h.pendingMu.Unlock()
+
+	// Spawn the actual upstream session creation. On completion (success or
+	// failure), broadcast the result to all waiters and remove the entry.
+	go func() {
+		client := h.pool.Pick()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		sessionID, err := client.CreateSession(ctx)
+		h.pendingMu.Lock()
+		delete(h.pending, key) // remove entry first so no new waiter blocks here
+		h.pendingMu.Unlock()
+
+		if err != nil {
+			log.Printf("chat: session create failed: %v", err)
+			entry.done <- nil // signal failure
+			return
+		}
+		conv := &Conversation{
+			Client:  client,
+			SessionID: sessionID,
+			LastUsed: time.Now(),
+			ModelID:  modelID,
+		}
+		entry.done <- conv // broadcast success to all waiters
+	}()
+
+	// Wait for the upstream session creation to complete.
+	h.pendingMu.Lock()
+	entry = h.pending[key] // re-acquire in case another goroutine won the race
+	h.pendingMu.Unlock()
+	select {
+	case conv := <-entry.done:
+		if conv != nil {
+			return conv, nil
+		}
+		return nil, context.Canceled
+	case <-entry.ctx.Done():
+		return nil, entry.ctx.Err()
+	}
 }
 
 func (h *Handler) buildUsage(conv *Conversation, total int64, replyChars int) map[string]int {
