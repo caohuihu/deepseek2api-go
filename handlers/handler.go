@@ -99,11 +99,15 @@ type Handler struct {
 	// enforcing a cooldown to simulate a human reading the reply.
 	lastRequestAt map[*deepseek.Client]time.Time
 
-	// pendingMu protects pending so concurrent requests for the same
-	// conversation prefix deduplicate instead of each spawning their own
-	// upstream session.
+	// pendingMu protects pending and prefixToClientIdx so concurrent requests
+	// for the same conversation prefix deduplicate instead of each spawning
+	// their own upstream session.
 	pendingMu sync.Mutex
 	pending   map[string]*pendingEntry // key = PrefixKey (prompt hash)
+	// prefixToClientIdx binds a conversation prefix to a specific account
+	// index so that all requests sharing that prefix always use the same
+	// DeepSeek account — keeping the conversation context intact.
+	prefixToClientIdx map[string]int
 }
 
 // pendingEntry represents an in-flight session creation for one prompt prefix.
@@ -115,12 +119,13 @@ type pendingEntry struct {
 
 func New(cfg *config.Config, pool *AccountPool, convs *ConvStore) *Handler {
 	h := &Handler{
-		cfg:     cfg,
-		pool:    pool,
-		convs:   convs,
-		limiter: NewAccountLimiter(cfg.AccountQPM),
-		lastRequestAt: make(map[*deepseek.Client]time.Time),
-		pending:   make(map[string]*pendingEntry),
+		cfg:               cfg,
+		pool:              pool,
+		convs:             convs,
+		limiter:           NewAccountLimiter(cfg.AccountQPM),
+		lastRequestAt:     make(map[*deepseek.Client]time.Time),
+		pending:           make(map[string]*pendingEntry),
+		prefixToClientIdx: make(map[string]int),
 	}
 	// Start background goroutine for periodic DeviceID rotation.
 	if cfg.DeviceIDRotateHours > 0 {
@@ -499,9 +504,9 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 }
 
 // coalesceOrCreate ensures all concurrent requests sharing the same prefix
-// reuse a single in-flight session creation. It holds the lock while creating
-// the entry so two simultaneous callers cannot both miss the map and each
-// spawn their own session.
+// reuse a single in-flight session creation. It also respects the prefix-to-
+// account binding so that the same prefix always lands on the same DeepSeek
+// account, keeping the conversation context intact.
 func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
 	// Phase 1: check / create entry while holding the lock.
 	h.pendingMu.Lock()
@@ -520,16 +525,34 @@ func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
 	}
 	entry := &pendingEntry{done: make(chan *Conversation, 1), ctx: context.Background()}
 	h.pending[key] = entry
-	// Spawn the goroutine while still holding the lock. No other caller can
-	// enter the create-path until we drop the lock below, preventing the
-	// classic double-creation race.
+
+	// Determine which account to use for this prefix. A bound account keeps
+	// the conversation on the same DeepSeek session, preventing context loss.
+	clientIdx := h.prefixToClientIdx[key]
+	needBind := false
+	if clientIdx >= len(h.pool.clients) {
+		// First time seeing this prefix — pick next client in round-robin order.
+		clientIdx = int(h.pool.next.Add(1)) % len(h.pool.clients)
+		needBind = true
+	}
+	if needBind {
+		h.prefixToClientIdx[key] = clientIdx
+	}
+	boundClient := h.pool.clients[clientIdx]
+
+	// Spawn the goroutine while still holding the lock so no other caller can
+	// enter the create-path. We drop the lock IMMEDIATELY after spawning —
+	// the goroutine only re-acquires it briefly at the end to clean up the
+	// map entry (avoiding a ~20 s hold that would deadlock all other requests).
 	go func() {
-		defer h.pendingMu.Unlock() // release lock AFTER goroutine finishes
-		client := h.pool.Pick()
+		client := boundClient
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		sessionID, err := client.CreateSession(ctx)
+		// Briefly re-acquire lock only for map cleanup.
+		h.pendingMu.Lock()
 		delete(h.pending, key)
+		h.pendingMu.Unlock()
 		if err != nil {
 			log.Printf("chat: session create failed: %v", err)
 			entry.done <- nil
@@ -542,7 +565,7 @@ func (h *Handler) coalesceOrCreate(key, modelID string) (*Conversation, error) {
 			ModelID:   modelID,
 		}
 	}()
-	// Drop the lock so this caller can proceed to wait.
+	// Drop the lock now — the goroutine runs independently.
 	h.pendingMu.Unlock()
 
 	// Phase 2: wait for the upstream session to be created.
@@ -602,7 +625,9 @@ func mapUpstreamError(err error) (int, string) {
 }
 
 // chatWithRetry calls conv.Client.Completion with exponential-backoff retry
-// on 429 responses, rotating to a different account on each retry.
+// on 429 responses. It stays on the same account for the entire conversation
+// to preserve context; only the read-time cooldown and QPM token bucket provide
+// back-pressure.
 func (h *Handler) chatWithRetry(ctx context.Context, conv *Conversation, input deepseek.CompletionInput, cb *deepseek.StreamCallbacks) error {
 	var lastErr error
 	baseDelay := h.cfg.RetryBaseDelay
@@ -610,11 +635,6 @@ func (h *Handler) chatWithRetry(ctx context.Context, conv *Conversation, input d
 		baseDelay = 2 * time.Second
 	}
 	for attempt := 0; attempt <= h.cfg.RetryMaxAttempts; attempt++ {
-		if attempt > 0 {
-			// Switch to a different account for retry.
-			conv.Client = h.pool.Pick()
-			input.SessionID = "" // force fresh session on new account
-		}
 		lastErr = h.doCompletionWithRetry(ctx, conv.Client, input, cb, baseDelay, attempt)
 		if lastErr == nil {
 			return nil
@@ -623,11 +643,14 @@ func (h *Handler) chatWithRetry(ctx context.Context, conv *Conversation, input d
 		if !errors.As(lastErr, &ae) || ae.HTTPStatus != 429 {
 			break // non-429 error: don't retry
 		}
+		// Rate-limited — retry on the same account with increasing delay.
+		// Switching accounts would break the conversation context, so we
+		// stay put and wait.
 		wait := baseDelay * time.Duration(1<<uint(attempt-1)) // 2s, 4s, 8s...
 		if wait > time.Minute*5 {
 			wait = time.Minute * 5
 		}
-		log.Printf("chat: account rate-limited (429), retry %d/%d in %s", attempt+1, h.cfg.RetryMaxAttempts, wait.Round(time.Second))
+		log.Printf("chat: account rate-limited (429), retry %d/%d in %s", attempt+1, h.cfg.RetryMaxAttempts+1, wait.Round(time.Second))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
