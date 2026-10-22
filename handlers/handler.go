@@ -370,6 +370,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	key := PrefixKey(append(append([]chatMessage{}, req.Messages...),
 		chatMessage{Role: "assistant", Content: json.RawMessage(mustJSON(reply.String()))}), m.ID)
 	h.convs.Register(key, conv)
+	log.Printf("chat: registered conv session=%s turns=%d keyLen=%d", conv.SessionID[:8], conv.Turn, len(key))
 
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -425,16 +426,31 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 //   3. Fallback to most-recently-used session for the same model (enables
 //      continuous Q&A even when the client sends only the latest message)
 func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, bool, error) {
+	// Debug: log the incoming request structure
+	msgCount := len(req.Messages)
+	lastMsgText := ""
+	if msgCount > 0 {
+		lastMsgText = contentText(req.Messages[msgCount-1].Content)
+		if len(lastMsgText) > 60 {
+			lastMsgText = lastMsgText[:60] + "..."
+		}
+	}
+	log.Printf("chat: conversation lookup model=%s msgs=%d convID=%s lastMsg=%q",
+		m.ID, msgCount, req.ConversationID, lastMsgText)
+
 	// Strategy 1: explicit conversation ID
 	if req.ConversationID != "" {
 		if c := h.convs.BySession(req.ConversationID); c != nil {
+			log.Printf("chat: strategy1 hit convID=%s session=%s", req.ConversationID, c.SessionID[:8])
 			return c, false, nil
 		}
+		log.Printf("chat: strategy1 miss convID=%s (not found)", req.ConversationID)
 	}
 
 	// Strategy 2: prefix-based cache hit
 	key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
 	if c := h.convs.ByPrefix(key); c != nil {
+		log.Printf("chat: strategy2 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
 		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
 			log.Printf("chat: randomly resetting session (chance %.0f%%)", h.cfg.SessionResetChance*100)
 		} else {
@@ -443,17 +459,15 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	}
 
 	// Strategy 3: fallback — reuse the most recently used session for this model.
-	// This is what enables continuous multi-turn Q&A when the client only sends
-	// the latest message without carrying the full conversation history.
-	// When SessionResetChance is active, occasionally discard the cached session
-	// and start fresh, mimicking how real users open a new chat.
 	if c := h.convs.RecentForModel(m.ID); c != nil {
+		log.Printf("chat: strategy3 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
 		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
 			log.Printf("chat: randomly resetting session via fallback (chance %.0f%%)", h.cfg.SessionResetChance*100)
 		} else {
 			return c, false, nil
 		}
 	}
+	log.Printf("chat: strategy3 miss, creating new session for model=%s", m.ID)
 
 	// No session found — create a fresh one.
 	client := h.pool.Pick()
@@ -463,6 +477,7 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	if err != nil {
 		return nil, false, err
 	}
+	log.Printf("chat: strategy3 new session created session=%s model=%s", sessionID[:8], m.ID)
 	return &Conversation{Client: client, SessionID: sessionID, LastUsed: time.Now(), ModelID: m.ID}, true, nil
 }
 
