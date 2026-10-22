@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,16 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+
+	// Set up multi-writer logging: always write to stdout, optionally also to file.
+	if cfg.LogFile != "" {
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalf("open log file: %v", err)
+		}
+		log.SetOutput(io.MultiWriter(os.Stdout, f))
+		log.Printf("log file enabled: %s", cfg.LogFile)
 	}
 
 	convs := handlers.NewConvStore(cfg.ConversationTTLOptions, cfg.MaxConvs, cfg.RequestsPerSession)

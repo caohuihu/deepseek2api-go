@@ -160,6 +160,7 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 | `REQUEST_READ_TIME_MAX` | `30s` | 同一账号两次请求之间的最大等待（秒） |
 | `SESSION_RESET_CHANCE` | `0.15` | 每次请求有 X% 概率开新会话（同时影响 Strategy 2 和 Strategy 3，控制连续问答的"断句"频率） |
 | `REQUESTS_PER_SESSION` | `0` | 每个会话最大请求数，到达后强制创建新会话（0=关闭，与 SESSION_RESET_CHANCE 配合使用） |
+| `LOG_FILE` | `/app/logs/app.log` | 日志文件路径，留空只输出到 stdout；设置后日志同时写入文件 |
 
 ## Multi-turn conversations
 
