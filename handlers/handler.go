@@ -461,28 +461,33 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 		log.Printf("chat: strategy1 miss convID=%s (not found)", req.ConversationID)
 	}
 
-	// Strategy 2: prefix-based cache hit
+	// Strategy 2: prefix-based cache hit.
+	// On a hit, we may evict the cached session (with SessionResetChance) so
+	// that future requests can start fresh — this is what enables parallel
+	// agent tool-calls to each get their own DeepSeek session.
 	key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
 	if c := h.convs.ByPrefix(key); c != nil {
 		log.Printf("chat: strategy2 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
 		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
-			log.Printf("chat: randomly resetting session (chance %.0f%%)", h.cfg.SessionResetChance*100)
+			log.Printf("chat: evicting cached session %s (chance %.0f%%), creating new one", c.SessionID[:8], h.cfg.SessionResetChance*100)
+			h.convs.Evict(c.SessionID)
 		} else {
 			return c, false, nil
 		}
 	}
 
 	// Strategy 3: fallback — reuse the most recently used session for this model.
+	// Same eviction logic: occasionally drop the cached session so concurrent
+	// requests don't all fight over the same one.
 	if c := h.convs.RecentForModel(m.ID); c != nil {
 		log.Printf("chat: strategy3 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
 		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
-			log.Printf("chat: randomly resetting session via fallback (chance %.0f%%)", h.cfg.SessionResetChance*100)
+			log.Printf("chat: evicting session %s via fallback (chance %.0f%%), creating new one", c.SessionID[:8], h.cfg.SessionResetChance*100)
+			h.convs.Evict(c.SessionID)
 		} else {
 			return c, false, nil
 		}
 	}
-	log.Printf("chat: strategy3 miss, coalescing new session for model=%s prefix=%s", m.ID, key)
-
 	// Coalesce concurrent requests with the same prefix: instead of each
 	// spawning its own session, share one in-flight session creation.
 	conv, err := h.coalesceOrCreate(key, m.ID)

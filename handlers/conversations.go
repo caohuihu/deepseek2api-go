@@ -75,6 +75,17 @@ func (s *ConvStore) ByPrefix(key string) *Conversation {
 	return s.byPrefix[key]
 }
 
+// Evict removes a conversation from both maps. Call this when you want to
+// force the next request for the same session to create a fresh one.
+func (s *ConvStore) Evict(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.bySession[sessionID]; ok {
+		s.removeLocked(sessionID, c)
+		log.Printf("chat: evicted session %s from cache", sessionID[:8])
+	}
+}
+
 // RecentForModel returns the most recently used conversation for the given
 // model, or nil if no conversation exists for that model yet. This is used
 // as a fallback so that a client which sends only its latest message (without
