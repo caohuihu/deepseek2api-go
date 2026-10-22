@@ -25,11 +25,15 @@ services:
       - DEVICE_ID_ROTATE_HOURS=${DEVICE_ID_ROTATE_HOURS:-0}
       - REQUEST_READ_TIME_MIN=${REQUEST_READ_TIME_MIN:-5s}
       - REQUEST_READ_TIME_MAX=${REQUEST_READ_TIME_MAX:-30s}
-      # 会话随机重置概率：每次有 X% 概率开新会话（同时影响 Strategy 2 和 Strategy 3）
+      # 会话重置概率：每次有 X% 概率开新会话（影响 Strategy 2 和 Strategy 3）
       # - Strategy 2（prefix 命中时）：X% 概率主动放弃缓存、建新对话
       # - Strategy 3（兜底最近会话时）：X% 概率放弃复用、开新对话
       # 值越大会话越短，值越小越容易保持长对话
       - SESSION_RESET_CHANCE=${SESSION_RESET_CHANCE:-0.15}
+      # 每个 DeepSeek 会话最多处理 N 条消息，之后自动创建新会话
+      # 0 = 关闭（仅依赖 SESSION_RESET_CHANCE 随机控制）
+      # 推荐值：5~10 → 约每 5-10 条消息开一个新会话，可实现 3-5 个会话持续运行
+      - REQUESTS_PER_SESSION=${REQUESTS_PER_SESSION:-0}
     volumes:
       - ./accounts.txt:/app/accounts.txt:ro
     restart: unless-stopped

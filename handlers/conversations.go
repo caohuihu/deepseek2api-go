@@ -28,6 +28,7 @@ type Conversation struct {
 	LastUsed  time.Time
 	ttl       time.Duration // per-conversation TTL; 0 = never delete
 	ModelID   string        // the model this session was created for
+	turnCount int           // number of requests served by this session (0 = not yet registered)
 }
 
 // Lock guards the conversation for one completion round trip.
@@ -41,19 +42,21 @@ func (c *Conversation) Unlock() {
 // conversations, and removes idle sessions upstream after each session's own
 // randomized TTL.
 type ConvStore struct {
-	ttlOptions []time.Duration // possible TTL values; empty duration means "never delete"
-	maxSize    int
-	mu         sync.Mutex
-	byPrefix   map[string]*Conversation
-	bySession  map[string]*Conversation
+	ttlOptions       []time.Duration // possible TTL values; empty duration means "never delete"
+	maxSize          int
+	requestsPerSession int         // max requests per session before forcing a new one (0 = disabled)
+	mu               sync.Mutex
+	byPrefix         map[string]*Conversation
+	bySession        map[string]*Conversation
 }
 
-func NewConvStore(ttlOptions []time.Duration, maxSize int) *ConvStore {
+func NewConvStore(ttlOptions []time.Duration, maxSize, requestsPerSession int) *ConvStore {
 	return &ConvStore{
-		ttlOptions: ttlOptions,
-		maxSize:    maxSize,
-		byPrefix:   make(map[string]*Conversation),
-		bySession:  make(map[string]*Conversation),
+		ttlOptions:       ttlOptions,
+		maxSize:          maxSize,
+		requestsPerSession: requestsPerSession,
+		byPrefix:         make(map[string]*Conversation),
+		bySession:        make(map[string]*Conversation),
 	}
 }
 
@@ -105,6 +108,14 @@ func (s *ConvStore) Register(prefixKey string, conv *Conversation) {
 	// Assign a random TTL on first registration (fresh conversation).
 	if conv.ttl == 0 {
 		conv.ttl = s.pickRandomTTL()
+	}
+	// Increment turn count. When it exceeds the configured limit, evict
+	// this conversation so the next request will create a fresh session.
+	conv.turnCount++
+	if s.requestsPerSession > 0 && conv.turnCount > s.requestsPerSession {
+		log.Printf("chat: session %s reached max turns (%d), evicting", conv.SessionID, s.requestsPerSession)
+		s.removeLocked(conv.SessionID, conv)
+		return
 	}
 	s.bySession[conv.SessionID] = conv
 	if prefixKey != "" {

@@ -29,7 +29,8 @@ type Config struct {
 	DeviceIDRotateHours       int           // rotate deviceID every N hours (0 = disabled, default 0)
 	RequestReadTimeMin        time.Duration // min cooldown between requests to same account (simulate reading reply)
 	RequestReadTimeMax        time.Duration // max cooldown between requests to same account
-	SessionResetChance        float64       // probability of ignoring cached session and starting fresh (0-1)
+	SessionResetChance        float64       // probabilistic session reset chance (0-1)
+	RequestsPerSession        int           // max requests per DeepSeek session before forcing a new one (0 = disabled, use SessionResetChance only)
 }
 
 // Load reads configuration from the environment. Accounts come from
@@ -61,6 +62,7 @@ func Load() (*Config, error) {
 		RequestReadTimeMin:        parseDurationEnv("REQUEST_READ_TIME_MIN", 5*time.Second),
 		RequestReadTimeMax:        parseDurationEnv("REQUEST_READ_TIME_MAX", 30*time.Second),
 		SessionResetChance:        parseFloatEnv("SESSION_RESET_CHANCE", 0.15),
+		RequestsPerSession:        parseIntEnv("REQUESTS_PER_SESSION", 0),
 	}
 	if cfg.ProxyAPIKey == "" {
 		return nil, fmt.Errorf("PROXY_API_KEY is required")

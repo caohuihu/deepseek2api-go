@@ -20,7 +20,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	convs := handlers.NewConvStore(cfg.ConversationTTLOptions, cfg.MaxConvs)
+	convs := handlers.NewConvStore(cfg.ConversationTTLOptions, cfg.MaxConvs, cfg.RequestsPerSession)
 	rotateInterval := time.Duration(cfg.DeviceIDRotateHours) * time.Hour
 	h := handlers.New(cfg, handlers.NewPool(cfg.Accounts, cfg.PowJitterMin, cfg.PowJitterMax, rotateInterval), convs)
 
@@ -62,6 +62,9 @@ func main() {
 		}())
 		log.Printf("  request read time        : %s ~ %s", cfg.RequestReadTimeMin, cfg.RequestReadTimeMax)
 		log.Printf("  session reset chance     : %.0f%%", cfg.SessionResetChance*100)
+		if cfg.RequestsPerSession > 0 {
+			log.Printf("  requests per session     : %d (auto-rotate after N turns)", cfg.RequestsPerSession)
+		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
