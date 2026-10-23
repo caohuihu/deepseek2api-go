@@ -177,6 +177,34 @@ PROXY_API_KEY='your-proxy-key' DEEPSEEK_TOKEN='your-token' docker compose up --b
 > the system prompt and the latest user message are replayed. This is a
 > deliberate simplification.
 
+## Tool calling (function calling)
+
+The upstream web backend has no native function-calling API, so the proxy
+simulates it at the text layer (the same approach webai2api uses):
+
+- Send OpenAI-style `tools` / `tool_choice` in the request body. The proxy
+  injects the tool schema plus a strict DSML call-format protocol into the
+  system block on **every** turn, so agent loops (Siyuan, Open WebUI, Cherry
+  Studio, any OpenAI SDK) keep working across many tool round-trips.
+- Replies that carry a tool call are parsed out of the model text (DSML
+  `<｜｜DSML｜｜ calls>` blocks and `<|tool_calls|>` sentinels, tolerant to
+  half/full-width pipes, case, missing close tags). The response then follows
+  the OpenAI spec: `message.tool_calls` populated, `content: null`,
+  `finish_reason: "tool_calls"`. Marker fragments are stripped from the
+  content so no artifact leaks to the client.
+- Echoed `role: "tool"` results and assistant `tool_calls` are re-rendered
+  back into the prompt (sentinel form / `[Tool Result id=...]` lines), and
+  the conversation-prefix cache key includes the canonicalized
+  `tool_calls` structure so each agent turn reuses the same upstream
+  session.
+- `tool_choice`: `auto` (default), `none` (tools ignored), `required`, or
+  `{"type":"function","function":{"name":"..."}}`.
+- Unknown tool names emitted by the model are dropped (strict mode), not
+  forwarded to the agent.
+- Agent tool loops are exempted from the random session-reset chance and the
+  read-time cooldown is capped at 2s so the loop stays responsive.
+- `response_format: {"type":"json_object"}` injects a "JSON only" directive.
+
 ## Authentication
 
 Every `/v1/*` request needs:

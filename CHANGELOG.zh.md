@@ -75,3 +75,26 @@
 2. **节奏拟人**：请求抖动 + POW 延迟让请求间隔和计算耗时接近真实浏览器行为。
 3. **会话分散**：新建会话随机延迟防止批量创建会话的模式识别。
 4. **账号隔离**：限流器 + 并发信号量 + 429 重试轮换，确保单账号异常不影响其他账号。
+
+### 工具调用支持（Function Calling）
+
+上游网页版没有原生 function-calling 接口，本轮在文本层补齐（思路对齐 webai2api），使思源笔记等 OpenAI 客户端的 agent 工具循环可持续运行：
+
+- **新增文件** `handlers/tools.go`、`handlers/tools_stream.go`：
+  - `buildToolPrompt`：把工具 schema + 严格 DSML 调用协议注入 system 块，`tools` 内容做进程内缓存。
+  - DSML / 哨兵解析器（`parseToolCalls`）：容忍全角/半角竖线、大小写、缺失 `</invoke>`、缺失 `</calls>`；不声明工具时仍会剥离模型泄漏的标记碎片（零污染原则）。
+  - 流式检测器（`streamingToolDetector`）：SCAN/DSML/SENTINEL 状态机，逐 delta 累积、按 OpenAI 规范发 `tool_calls` 增量 chunk。
+  - `canonicalToolCalls`：工具调用结构规范化，纳入会话前缀缓存键。
+- **`handlers/handler.go`**：
+  - `chatRequest` 增加 `tools` / `tool_choice` / `response_format`；`chatMessage` 增加 `tool_calls` / `tool_call_id`。
+  - 工具流路径：缓存命中时只重发「最后一条 assistant 之后」的新消息（工具结果、新用户消息），system/工具协议每轮重注入；新建会话时重放完整历史。
+  - 响应带 `tool_calls` + `content: null` + `finish_reason: "tool_calls"`；流式按规范发 id/name 与 arguments 两个 chunk。
+  - agent 工具循环（消息含 `role:"tool"` 或 assistant `tool_calls`）：免除随机会话重置；读时间冷却上限压到 2s。
+  - 未知工具名严格丢弃，不透传给 agent。
+- **`handlers/conversations.go`**：`PrefixKey` 纳入规范化的 `tool_calls` 与 `tool_call_id`，agent 每轮命中同一上游会话。
+- **`handlers/sse.go`**：`sseWriter` 新增 `toolCalls` 方法；`finish` 支持自定义 `finish_reason`。
+
+### 效果
+
+- 思源笔记 / Open WebUI / Cherry Studio / 任意 OpenAI SDK 的 agent 循环（写日记、调工具、回填结果）可完整跑通，不再把 DeepSeek 网页命令当纯文本显示。
+

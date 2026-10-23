@@ -56,12 +56,51 @@ func (s *sseWriter) delta(kind deepseek.DeltaKind, text string) {
 	}
 }
 
-func (s *sseWriter) finish(usage map[string]int, includeUsage bool) {
+// toolCalls emits OpenAI-spec tool_call delta chunks: per call, one chunk
+// with id + name and one with the arguments.
+func (s *sseWriter) toolCalls(calls []ToolCall) {
+	if s.failed || !s.opened || len(calls) == 0 {
+		return
+	}
+	for i, c := range calls {
+		head := map[string]any{
+			"tool_calls": []any{map[string]any{
+				"index": i,
+				"id":    c.ID,
+				"type":  "function",
+				"function": map[string]any{
+					"name":      c.Name,
+					"arguments": "",
+				},
+			}},
+		}
+		if err := s.send(head, nil); err != nil {
+			s.failed = true
+			return
+		}
+		args := map[string]any{
+			"tool_calls": []any{map[string]any{
+				"index": i,
+				"function": map[string]any{
+					"arguments": c.Arguments,
+				},
+			}},
+		}
+		if err := s.send(args, nil); err != nil {
+			s.failed = true
+			return
+		}
+	}
+}
+
+func (s *sseWriter) finish(usage map[string]int, includeUsage bool, finishReason string) {
 	if s.failed {
 		return
 	}
-	stop := "stop"
-	if err := s.send(map[string]any{}, &stop); err != nil {
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	if err := s.send(map[string]any{}, &finishReason); err != nil {
 		s.failed = true
 		return
 	}

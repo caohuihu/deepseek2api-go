@@ -12,9 +12,9 @@ import (
 //   - QPM (requests per minute): sliding-window token bucket, one token per request.
 //   - MaxConcurrent: semaphore limiting in-flight requests at any moment.
 type AccountLimiter struct {
-	mu             sync.Mutex
-	buckets        map[string]*accountBucket
-	defaultQPM     int
+	mu         sync.Mutex
+	buckets    map[string]*accountBucket
+	defaultQPM int
 }
 
 type accountBucket struct {

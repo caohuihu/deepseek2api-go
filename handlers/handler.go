@@ -102,9 +102,9 @@ func (p *AccountPool) Pick() *deepseek.Client {
 
 // Handler serves the OpenAI-compatible API.
 type Handler struct {
-	cfg   *config.Config
-	pool  *AccountPool
-	convs *ConvStore
+	cfg     *config.Config
+	pool    *AccountPool
+	convs   *ConvStore
 	limiter *AccountLimiter
 	mu      sync.Mutex // protects lastRequestAt
 	// lastRequestAt tracks the time of the last request per client pointer,
@@ -163,8 +163,10 @@ func (h *Handler) startDeviceIDRotation() {
 // ---- OpenAI wire types ----
 
 type chatMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 type chatRequest struct {
@@ -175,6 +177,9 @@ type chatRequest struct {
 	StreamOptions  *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
+	Tools          json.RawMessage `json:"tools,omitempty"`
+	ToolChoice     json.RawMessage `json:"tool_choice,omitempty"`
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 func contentText(raw json.RawMessage) string {
@@ -280,28 +285,21 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// The last user message is the prompt; the rest is context that either the
 	// conversation cache or the upstream session already holds.
 	var systemParts []string
-	var lastUserText string
-	var lastUserImages []imageRef
-	hasUser := false
 	for _, msg := range req.Messages {
-		switch msg.Role {
-		case "system", "developer":
+		if msg.Role == "system" || msg.Role == "developer" {
 			if text := contentText(msg.Content); text != "" {
 				systemParts = append(systemParts, text)
 			}
-		case "user":
-			hasUser = true
-			lastUserText = contentText(msg.Content)
-			lastUserImages = extractImages(msg.Content)
 		}
 	}
-	if !hasUser || (strings.TrimSpace(lastUserText) == "" && len(lastUserImages) == 0) {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages must contain a user message with text or images")
-		return
-	}
-	prompt := lastUserText
 
-	conv, fresh, err := h.conversation(&req, m)
+	tools := parseTools(req.Tools)
+	choice := parseToolChoice(req.ToolChoice)
+	activeTools := len(tools) > 0 && choice.kind != "none"
+	toolFlow := hasToolFlow(req.Messages)
+	useToolPath := activeTools || toolFlow
+
+	conv, fresh, err := h.conversation(&req, m, toolFlow)
 	if err != nil {
 		log.Printf("chat: create session failed: %v", err)
 		status, msg := mapUpstreamError(err)
@@ -312,16 +310,89 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	conv.Lock()
 	defer conv.Unlock()
 
-	if fresh && len(systemParts) > 0 {
-		prompt = "[System]\n" + strings.Join(systemParts, "\n\n") + "\n[/System]\n\n" + prompt
+	var prompt string
+	var images []imageRef
+	if useToolPath {
+		// Agent / tool flow. The upstream session already holds everything up to
+		// the last assistant message, so on a cache hit only the newer messages
+		// are sent; a fresh session gets the full history. The tool protocol and
+		// system directives are re-injected on every turn so the model keeps the
+		// format as the session grows.
+		start := 0
+		if !fresh {
+			if la := lastAssistantIndex(req.Messages); la >= 0 {
+				start = la + 1
+			}
+		}
+		if activeTools {
+			if tp := buildToolPrompt(tools, choice); tp != "" {
+				systemParts = append(systemParts, tp)
+			}
+		}
+		if isJSONMode(req.ResponseFormat) {
+			systemParts = append(systemParts, "Reply with ONLY a valid JSON object. No extra text, no markdown.")
+		}
+		if len(systemParts) > 0 {
+			prompt = "[System]\n" + strings.Join(systemParts, "\n\n") + "\n[/System]"
+		}
+		var lines []string
+		for _, msg := range req.Messages[start:] {
+			switch msg.Role {
+			case "system", "developer":
+				// already collected into systemParts above
+			case "user":
+				if text := contentText(msg.Content); text != "" {
+					lines = append(lines, text)
+				}
+				images = append(images, extractImages(msg.Content)...)
+			case "assistant":
+				if s := renderToolCallsSentinel(msg.ToolCalls); s != "" {
+					lines = append(lines, s)
+				}
+				if text := contentText(msg.Content); text != "" {
+					lines = append(lines, text)
+				}
+			case "tool":
+				lines = append(lines, "[Tool Result id="+msg.ToolCallID+"]: "+contentText(msg.Content))
+			}
+		}
+		if len(lines) > 0 {
+			prompt += "\n\n" + strings.Join(lines, "\n")
+		}
+		if strings.TrimSpace(prompt) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "messages carry no content to send")
+			return
+		}
+	} else {
+		// Plain chat path (unchanged): only the last user message is new input.
+		var lastUserText string
+		var lastUserImages []imageRef
+		hasUser := false
+		for _, msg := range req.Messages {
+			if msg.Role != "user" {
+				continue
+			}
+			hasUser = true
+			lastUserText = contentText(msg.Content)
+			lastUserImages = extractImages(msg.Content)
+		}
+		if !hasUser || (strings.TrimSpace(lastUserText) == "" && len(lastUserImages) == 0) {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "messages must contain a user message with text or images")
+			return
+		}
+		prompt = lastUserText
+		images = lastUserImages
+		if fresh && len(systemParts) > 0 {
+			prompt = "[System]\n" + strings.Join(systemParts, "\n\n") + "\n[/System]\n\n" + prompt
+		}
 	}
 
 	// Images ride along as uploaded files referenced by ref_file_ids. Only the
-	// last user message's images are sent; older ones are already in the
-	// upstream session context.
+	// current turn's images are sent; older ones are already in the upstream
+	// session context.
 	var refFileIDs []string
-	if len(lastUserImages) > 0 {
-		ids, err := uploadImages(r.Context(), conv.Client, lastUserImages)
+	if len(images) > 0 {
+		ids, err := uploadImages(r.Context(), conv.Client, images)
 		if err != nil {
 			log.Printf("chat: image upload failed: %v", err)
 			writeError(w, http.StatusBadGateway, "api_error", "image upload failed: "+err.Error())
@@ -351,6 +422,38 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	var reply, thinking strings.Builder
 	var usageTotal int64 = -1
+	var stream *sseWriter
+
+	// The marker detector runs on every reply stream: in tool mode it extracts
+	// calls; without tools it still strips any DSML / sentinel fragments the
+	// model may leak so artifacts never reach the client.
+	detector := newStreamingToolDetector(tools, !activeTools)
+	var emittedCalls []ToolCall
+
+	routeDeltas := func(kind deepseek.DeltaKind, text string) {
+		if kind == deepseek.DeltaThink {
+			thinking.WriteString(text)
+			if stream != nil {
+				stream.delta(kind, text)
+			}
+			return
+		}
+		reply.WriteString(text)
+		if stream == nil {
+			return // non-streaming: the full reply is parsed after completion
+		}
+		for _, act := range detector.feed(text) {
+			switch act.kind {
+			case actionText:
+				if act.text != "" {
+					stream.delta(deepseek.DeltaReply, act.text)
+				}
+			case actionToolCalls:
+				emittedCalls = append(emittedCalls, act.calls...)
+				stream.toolCalls(act.calls)
+			}
+		}
+	}
 
 	cb := &deepseek.StreamCallbacks{
 		OnReady: func(requestID, responseID int64) {
@@ -358,29 +461,17 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			conv.HasParent = true
 			conv.Turn++
 		},
-		OnDelta: func(kind deepseek.DeltaKind, text string) {
-			if kind == deepseek.DeltaThink {
-				thinking.WriteString(text)
-			} else {
-				reply.WriteString(text)
-			}
-		},
+		OnDelta: routeDeltas,
 		OnUsage: func(accumulated int64) {
 			usageTotal = accumulated
 		},
 	}
 
-	var stream *sseWriter
 	if req.Stream {
 		stream = newSSEWriter(w, completionID, modelName, createdAt, conv.SessionID)
 		if err := stream.open(); err != nil {
 			log.Printf("chat: client went away before stream start: %v", err)
 			return
-		}
-		onDelta := cb.OnDelta
-		cb.OnDelta = func(kind deepseek.DeltaKind, text string) {
-			onDelta(kind, text)
-			stream.delta(kind, text)
 		}
 	}
 
@@ -388,7 +479,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Blocks until a quota token and concurrency slot are both available.
 	// Also enforces a minimum cooldown between requests to the same account
 	// (simulates a human reading the reply before asking the next question).
-	h.enforceReadTimeCooldown(conv.Client)
+	h.enforceReadTimeCooldown(conv.Client, toolFlow)
 	release := h.limiter.Wait(conv.Client.DeviceID, h.cfg.AccountQPM, h.cfg.MaxConcurrentPerAccount)
 	defer release()
 
@@ -397,12 +488,41 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Record this request time for the next cooldown calculation.
 	h.recordRequestTime(conv.Client)
 
+	// Non-streaming replies are parsed for marker blocks once complete; the
+	// streaming detector already flushed its residue at the end of the stream.
+	var cleanText string
+	if !req.Stream {
+		calls, clean := parseToolCalls(reply.String(), tools)
+		emittedCalls = calls
+		cleanText = clean
+	} else {
+		for _, act := range detector.finalize() {
+			switch act.kind {
+			case actionText:
+				if act.text != "" {
+					stream.delta(deepseek.DeltaReply, act.text)
+				}
+			case actionToolCalls:
+				emittedCalls = append(emittedCalls, act.calls...)
+				stream.toolCalls(act.calls)
+			}
+		}
+	}
+
 	// Register the continuation key even on partial streams: the ready event
-	// already advanced the parent message id, so follow-ups can chain.
-	key := PrefixKey(append(append([]chatMessage{}, req.Messages...),
-		chatMessage{Role: "assistant", Content: json.RawMessage(mustJSON(reply.String()))}), m.ID)
+	// already advanced the parent message id, so follow-ups can chain. When
+	// the reply carried tool calls, the next request's prefix will contain
+	// the echoed assistant tool_calls + tool results, so they must be part
+	// of the registered key (canonical form).
+	var nextMsg chatMessage
+	if len(emittedCalls) > 0 {
+		nextMsg = chatMessage{Role: "assistant", ToolCalls: toolCallsJSON(emittedCalls)}
+	} else {
+		nextMsg = chatMessage{Role: "assistant", Content: json.RawMessage(mustJSON(reply.String()))}
+	}
+	key := PrefixKey(append(append([]chatMessage{}, req.Messages...), nextMsg), m.ID)
 	h.convs.Register(key, conv)
-	log.Printf("chat: registered conv session=%s turns=%d keyLen=%d", conv.SessionID[:8], conv.Turn, len(key))
+	log.Printf("chat: registered conv session=%s turns=%d keyLen=%d toolCalls=%d", conv.SessionID[:8], conv.Turn, len(key), len(emittedCalls))
 
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -418,14 +538,25 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	finishReason := "stop"
+	if len(emittedCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+
 	usage := h.buildUsage(conv, usageTotal, reply.Len())
 	if req.Stream {
-		stream.finish(usage, req.StreamOptions != nil && req.StreamOptions.IncludeUsage)
+		stream.finish(usage, req.StreamOptions != nil && req.StreamOptions.IncludeUsage, finishReason)
 		log.Printf("chat %s %s conv=%s turn=%d stream %s", completionID, modelName, conv.SessionID, conv.Turn, time.Since(start).Round(time.Millisecond))
 		return
 	}
 
-	message := map[string]any{"role": "assistant", "content": reply.String()}
+	message := map[string]any{"role": "assistant"}
+	if len(emittedCalls) > 0 {
+		message["content"] = nil
+		message["tool_calls"] = openAIToolCalls(emittedCalls)
+	} else {
+		message["content"] = cleanText
+	}
 	if t := thinking.String(); t != "" {
 		message["reasoning_content"] = t
 	}
@@ -438,7 +569,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		"choices": []any{map[string]any{
 			"index":         0,
 			"message":       message,
-			"finish_reason": "stop",
+			"finish_reason": finishReason,
 		}},
 		"usage": usage,
 	}
@@ -457,7 +588,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 //   2. Prefix-key match (historical messages match an existing session)
 //   3. Fallback to most-recently-used session for the same model (enables
 //      continuous Q&A even when the client sends only the latest message)
-func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, bool, error) {
+func (h *Handler) conversation(req *chatRequest, m *ModelInfo, toolLoop bool) (*Conversation, bool, error) {
 	// Debug: log the incoming request structure
 	msgCount := len(req.Messages)
 	lastMsgText := ""
@@ -467,8 +598,8 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 			lastMsgText = lastMsgText[:60] + "..."
 		}
 	}
-	log.Printf("chat: conversation lookup model=%s msgs=%d convID=%s lastMsg=%q",
-		m.ID, msgCount, req.ConversationID, lastMsgText)
+	log.Printf("chat: conversation lookup model=%s msgs=%d convID=%s toolLoop=%v lastMsg=%q",
+		m.ID, msgCount, req.ConversationID, toolLoop, lastMsgText)
 
 	// Strategy 1: explicit conversation ID
 	if req.ConversationID != "" {
@@ -479,6 +610,17 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 		log.Printf("chat: strategy1 miss convID=%s (not found)", req.ConversationID)
 	}
 
+	// Random eviction is skipped for agent tool loops: an agent's turns
+	// share one growing prefix, and dropping the session mid-loop would lose
+	// every tool result sent so far.
+	evict := func(c *Conversation) {
+		if !toolLoop && h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
+			log.Printf("chat: evicting cached session %s (chance %.0f%%), creating new one", c.SessionID[:8], h.cfg.SessionResetChance*100)
+			h.convs.Evict(c.SessionID)
+			return
+		}
+	}
+
 	// Strategy 2: prefix-based cache hit.
 	// On a hit, we may evict the cached session (with SessionResetChance) so
 	// that future requests can start fresh — this is what enables parallel
@@ -486,10 +628,8 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	key := PrefixKey(req.Messages[:len(req.Messages)-1], m.ID)
 	if c := h.convs.ByPrefix(key); c != nil {
 		log.Printf("chat: strategy2 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
-		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
-			log.Printf("chat: evicting cached session %s (chance %.0f%%), creating new one", c.SessionID[:8], h.cfg.SessionResetChance*100)
-			h.convs.Evict(c.SessionID)
-		} else {
+		evict(c)
+		if h.convs.ByPrefix(key) == c {
 			return c, false, nil
 		}
 	}
@@ -499,10 +639,8 @@ func (h *Handler) conversation(req *chatRequest, m *ModelInfo) (*Conversation, b
 	// requests don't all fight over the same one.
 	if c := h.convs.RecentForModel(m.ID); c != nil {
 		log.Printf("chat: strategy3 hit session=%s turns=%d", c.SessionID[:8], c.Turn)
-		if h.cfg.SessionResetChance > 0 && rand2.Float64() < h.cfg.SessionResetChance {
-			log.Printf("chat: evicting session %s via fallback (chance %.0f%%), creating new one", c.SessionID[:8], h.cfg.SessionResetChance*100)
-			h.convs.Evict(c.SessionID)
-		} else {
+		evict(c)
+		if h.convs.BySession(c.SessionID) == c {
 			return c, false, nil
 		}
 	}
@@ -715,8 +853,9 @@ func (h *Handler) recordRequestTime(client *deepseek.Client) {
 // enforceReadTimeCooldown waits until enough time has passed since the last
 // request to this account, simulating a human reading the reply before
 // sending the next message. This creates a natural inter-request rhythm
-// on top of the QPM token bucket.
-func (h *Handler) enforceReadTimeCooldown(client *deepseek.Client) {
+// on top of the QPM token bucket. Agent tool loops are machine-paced, so
+// their "reading" wait is capped to keep the loop responsive.
+func (h *Handler) enforceReadTimeCooldown(client *deepseek.Client, toolLoop bool) {
 	if h.cfg.RequestReadTimeMin <= 0 && h.cfg.RequestReadTimeMax <= 0 {
 		return
 	}
@@ -727,6 +866,15 @@ func (h *Handler) enforceReadTimeCooldown(client *deepseek.Client) {
 	if !last.IsZero() {
 		minWait := h.cfg.RequestReadTimeMin
 		maxWait := h.cfg.RequestReadTimeMax
+		if toolLoop {
+			const toolLoopCap = 2 * time.Second
+			if minWait > toolLoopCap {
+				minWait = toolLoopCap
+			}
+			if maxWait > toolLoopCap {
+				maxWait = toolLoopCap
+			}
+		}
 		if maxWait > minWait {
 			minWait = time.Duration(rand2.Int63n(int64(maxWait-minWait))) + minWait
 		}

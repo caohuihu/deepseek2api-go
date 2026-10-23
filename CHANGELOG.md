@@ -28,6 +28,22 @@ All notable changes to this project will be documented in this file.
 - **Startup log lines** (`main.go`)
   - Prints `account qpm`, `max concurrent/account`, `retry max attempts`, and `retry base delay` on launch.
 
+- **OpenAI-compatible tool calling** (`handlers/tools.go`, `handlers/tools_stream.go`)
+  - Accepts `tools` / `tool_choice` / `response_format` on `/v1/chat/completions`; the tool schema and a
+    strict DSML call-format protocol are injected into the system block on every turn.
+  - Model output is scanned for DSML `<｜｜DSML｜｜ calls>` blocks and `<|tool_calls|>` sentinels
+    (tolerant parser: half/full-width pipes, case, missing close tags); replies with calls return
+    `message.tool_calls` + `content: null` + `finish_reason: "tool_calls"` per the OpenAI spec.
+  - Streaming responses emit `tool_calls` delta chunks via a stateful detector; marker fragments are
+    stripped from `content` so no artifact reaches the client.
+  - Echoed `role: "tool"` results and assistant `tool_calls` are re-rendered into the prompt, and the
+    conversation-prefix cache key now includes the canonicalized `tool_calls` structure, so agent
+    loops (e.g. SiYuan Note) keep reusing one upstream session across round-trips.
+  - Agent tool loops are exempted from the random session-reset chance; their read-time cooldown is
+    capped at 2 s so the loop stays responsive.
+  - Strict tool-name mode: calls whose name is not in the declared tool set are dropped, not forwarded.
+  - `response_format: {"type":"json_object"}` injects a JSON-only directive.
+
 ### Changed
 
 - `config.Config` struct extended with the four new fields above.

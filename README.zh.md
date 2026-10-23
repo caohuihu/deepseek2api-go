@@ -148,6 +148,18 @@ PROXY_API_KEY='你的代理密钥' DEEPSEEK_TOKEN='你的token' docker compose u
 
 > 冷启动说明：服务重启后，若历史超过一轮，只会带上 system 提示词与最后一条用户消息。
 
+## 工具调用（Function Calling）
+
+上游网页版没有原生 function-calling 接口，代理在文本层模拟（与 webai2api 相同思路）：
+
+- 请求体带 OpenAI 风格的 `tools` / `tool_choice`。代理每轮都把工具 schema 和严格的 DSML 调用格式协议注入 system 块，保证 agent 循环（思源笔记、Open WebUI、Cherry Studio、任意 OpenAI SDK）在多轮工具往返中持续可用。
+- 模型回复若含工具调用（DSML `<｜｜DSML｜｜ calls>` 块或 `<|tool_calls|>` 哨兵，容忍全角/半角竖线、大小写、缺失闭合标签），解析后按 OpenAI 规范返回：`message.tool_calls` 填充、`content: null`、`finish_reason: "tool_calls"`。标记碎片会被从 content 中剥离，不外泄。
+- 回传的 `role:"tool"` 结果与 assistant `tool_calls` 会重新渲染进 prompt（哨兵形式 / `[Tool Result id=...]` 行）；会话前缀缓存键纳入规范化的 `tool_calls` 结构，使 agent 每一轮都复用同一上游会话。
+- `tool_choice`：`auto`（默认）、`none`（忽略工具）、`required`、或 `{"type":"function","function":{"name":"..."}}`。
+- 模型输出的未知工具名会被丢弃（严格模式），不透传给 agent。
+- agent 工具循环免除随机会话重置，读时间冷却上限压到 2s，保持循环响应。
+- `response_format: {"type":"json_object"}` 注入「仅输出 JSON」指令。
+
 ## 认证方式
 
 所有 `/v1/*` 请求需要：

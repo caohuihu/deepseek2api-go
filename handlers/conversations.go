@@ -42,21 +42,21 @@ func (c *Conversation) Unlock() {
 // conversations, and removes idle sessions upstream after each session's own
 // randomized TTL.
 type ConvStore struct {
-	ttlOptions       []time.Duration // possible TTL values; empty duration means "never delete"
-	maxSize          int
-	requestsPerSession int         // max requests per session before forcing a new one (0 = disabled)
-	mu               sync.Mutex
-	byPrefix         map[string]*Conversation
-	bySession        map[string]*Conversation
+	ttlOptions         []time.Duration // possible TTL values; empty duration means "never delete"
+	maxSize            int
+	requestsPerSession int // max requests per session before forcing a new one (0 = disabled)
+	mu                 sync.Mutex
+	byPrefix           map[string]*Conversation
+	bySession          map[string]*Conversation
 }
 
 func NewConvStore(ttlOptions []time.Duration, maxSize, requestsPerSession int) *ConvStore {
 	return &ConvStore{
-		ttlOptions:       ttlOptions,
-		maxSize:          maxSize,
+		ttlOptions:         ttlOptions,
+		maxSize:            maxSize,
 		requestsPerSession: requestsPerSession,
-		byPrefix:         make(map[string]*Conversation),
-		bySession:        make(map[string]*Conversation),
+		byPrefix:           make(map[string]*Conversation),
+		bySession:          make(map[string]*Conversation),
 	}
 }
 
@@ -220,13 +220,19 @@ func (s *ConvStore) sweepOnce(ctx context.Context) {
 // client that appends one exchange per request keeps hitting the same
 // DeepSeek session. The model is part of the key: switching models starts a
 // new session, matching DeepSeek's per-session model. Image references are
-// fingerprinted too, so image turns cache correctly.
+// fingerprinted too, so image turns cache correctly. Assistant tool_calls
+// and tool message ids are canonicalized into the key so agent tool loops
+// map back onto the same session.
 func PrefixKey(messages []chatMessage, model string) string {
 	h := sha256.New()
 	for _, m := range messages {
 		h.Write([]byte(m.Role))
 		h.Write([]byte{0x1f})
 		h.Write([]byte(contentFingerprint(m.Content)))
+		h.Write([]byte{0x1e})
+		h.Write([]byte(canonicalToolCalls(m.ToolCalls)))
+		h.Write([]byte{0x1e})
+		h.Write([]byte(m.ToolCallID))
 		h.Write([]byte{0x1e})
 	}
 	h.Write([]byte{0x00})
