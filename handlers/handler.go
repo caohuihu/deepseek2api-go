@@ -52,6 +52,13 @@ func lookupModel(name string) (*ModelInfo, bool) {
 // resolveModel matches a requested model id, falling back to heuristics for
 // unknown deepseek-* names so downstream clients that hardcode future or
 // renamed ids (deepseek-v4.1-flash & co) keep working.
+//
+// Heuristic rules (ordered priority):
+//   1. Exact alias match → use the named model as-is
+//   2. Contains "reasoner" AND "search" → deepseek-reasoner-search
+//   3. Contains "reasoner" or "think" or "-r1" → deepseek-reasoner
+//   4. Contains "search" → deepseek-search
+//   5. Otherwise → deepseek-chat (default)
 func resolveModel(name string) (*ModelInfo, bool) {
 	if m, ok := lookupModel(name); ok {
 		return m, true
@@ -60,14 +67,19 @@ func resolveModel(name string) (*ModelInfo, bool) {
 	if !strings.HasPrefix(lower, "deepseek") {
 		return nil, false
 	}
-	thinking := strings.Contains(lower, "reasoner") || strings.Contains(lower, "think") || strings.Contains(lower, "-r1")
-	search := strings.Contains(lower, "search")
-	for i := range models {
-		if models[i].Thinking == thinking && models[i].Search == search {
-			return &models[i], true
-		}
+	// Heuristic: check for combined model FIRST, then individual flags.
+	// This prevents deepseek-search from being matched as deepseek-reasoner-search.
+	if strings.Contains(lower, "reasoner") && strings.Contains(lower, "search") {
+		return &models[3], true // deepseek-reasoner-search
 	}
-	return nil, false
+	if strings.Contains(lower, "reasoner") || strings.Contains(lower, "think") || strings.Contains(lower, "-r1") {
+		return &models[1], true // deepseek-reasoner
+	}
+	if strings.Contains(lower, "search") {
+		return &models[2], true // deepseek-search
+	}
+	// Fallback: default model
+	return &models[0], true // deepseek-chat
 }
 
 // AccountPool round-robins the configured DeepSeek tokens.
@@ -263,6 +275,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("unknown model %q; available: deepseek-chat, deepseek-reasoner, deepseek-search, deepseek-reasoner-search", req.Model))
 		return
 	}
+	log.Printf("chat: resolved model=%s (request=%s) thinking=%v search=%v", m.ID, req.Model, m.Thinking, m.Search)
 
 	// The last user message is the prompt; the rest is context that either the
 	// conversation cache or the upstream session already holds.
